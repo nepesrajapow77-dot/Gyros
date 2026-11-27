@@ -36,7 +36,7 @@
 | Коллекция | Поля |
 | --- | --- |
 | `points` | `name` |
-| `employees` | `name`, `position`, `pointId`, `salary` (в месяц), `archived` (уволен) |
+| `employees` | `name`, `position`, `pointId`, `salary` (текущий оклад), `salaryHist` (`[{from:'YYYY-MM', amount}]`, оклад с месяца; `'2000-01'` = «всегда до этого»), `hired`, `fired` (даты, необязательно), `archived` (уволен), `paid` (`{'YYYY-MM': {amount, date, fromCash}}` — отметка о выдаче зарплаты) |
 | `registers` | `date`, `pointId`, `register` (счёт кассы), `check` (чек на питание) |
 | `food` | `date`, `pointId`, `employeeId` (`'__boss'` = «Знакомые начальника»), `amount` |
 | `advances` | `date`, `pointId`, `employeeId`, `amount` |
@@ -47,8 +47,9 @@
 
 Расчёты (в `app.js`):
 - касса точки за день = `register − check`;
-- общая наличка = нарастающий итог `cash + added − expense − advances` по всем точкам (`cashTimeline`);
-- к выдаче сотруднику за месяц = `salary − питание − авансы` за этот месяц;
+- общая наличка = нарастающий итог `cash + added − expense − advances − выданная зарплата (fromCash)` по всем точкам (`cashTimeline`);
+- начислено за месяц = оклад этого месяца (`salaryFor`) × отработанные дни / дней в месяце (`workDays`, по `hired`/`fired`);
+- к выдаче сотруднику за месяц = начислено − питание − авансы за этот месяц;
 - «Знакомые начальника» в зарплату не входят, считаются отдельно;
 - чек дня разделён полностью, когда сумма `food` за день и точку равна `check`.
 

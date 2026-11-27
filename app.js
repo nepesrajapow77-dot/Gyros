@@ -110,13 +110,38 @@ function ensurePoint() {
 // Общая наличка: по дням со всех точек. Аванс тоже выдаётся из налички.
 function cashTimeline() {
   const days = {};
-  const g = d => days[d] || (days[d] = { cash: 0, added: 0, expense: 0, advance: 0, entries: [], advs: [] });
+  const g = d => days[d] || (days[d] = { cash: 0, added: 0, expense: 0, advance: 0, salary: 0, entries: [], advs: [], pays: [] });
   db.cash.forEach(c => { const x = g(c.date); x.cash += num(c.cash); x.added += num(c.added); x.expense += num(c.expense); x.entries.push(c); });
   db.advances.forEach(a => { const x = g(a.date); x.advance += num(a.amount); x.advs.push(a); });
+  // Выданная зарплата, если её выдали из налички
+  db.employees.forEach(e => Object.entries(e.paid || {}).forEach(([m, p]) => {
+    if (!p || !p.fromCash || !p.date) return;
+    const x = g(p.date); x.salary += num(p.amount); x.pays.push({ e, m, amount: num(p.amount) });
+  }));
   const dates = Object.keys(days).sort();
   let run = 0;
-  dates.forEach(d => { const x = days[d]; run += x.cash + x.added - x.expense - x.advance; x.balance = run; });
+  dates.forEach(d => { const x = days[d]; run += x.cash + x.added - x.expense - x.advance - x.salary; x.balance = run; });
   return { days, dates };
+}
+
+/* ---------- Зарплата: оклад по месяцам и отработанные дни ---------- */
+// salaryHist: [{ from: 'YYYY-MM', amount }] — с какого месяца действует оклад
+function salaryFor(e, m) {
+  const h = Array.isArray(e.salaryHist) ? e.salaryHist.filter(x => x.from <= m).sort((a, b) => a.from.localeCompare(b.from)) : [];
+  return h.length ? num(h[h.length - 1].amount) : num(e.salary);
+}
+// Сколько дней месяца человек работал (по датам «начал» и «уволен»)
+function workDays(e, m) {
+  const [y, mm] = m.split('-').map(Number), dim = new Date(y, mm, 0).getDate();
+  const first = m + '-01', last = m + '-' + pad(dim);
+  const s = e.hired && e.hired > first ? e.hired : first;
+  const f = e.fired && e.fired < last ? e.fired : last;
+  const days = s > f ? 0 : Math.round((parseIso(f) - parseIso(s)) / 864e5) + 1;
+  return { days, dim };
+}
+function accrued(e, m) {
+  const w = workDays(e, m);
+  return { amount: salaryFor(e, m) * w.days / w.dim, full: salaryFor(e, m), days: w.days, dim: w.dim };
 }
 function balanceAt(date, t) {
   let b = 0;
@@ -320,6 +345,7 @@ function viewCash() {
   const dayCard = `<section class="card"><h2>${d === today() ? 'Сегодня' : fmtDay(d)}</h2>
     ${dayCash.map(c => `<button class="item" ${VIEWER ? '' : `data-act="editCash" data-id="${c.id}"`}><span>${esc(c.note || 'Запись')}</span><span class="num">${cashLine(c)}</span></button>` + photoGrid(cashPhotos(c.id))).join('')}
     ${dayAdv.length ? `<div class="item"><span>Аванс<span class="sub">${dayAdv.map(a => esc(empName(a.employeeId))).join(', ')}</span></span><span class="num">− ${money(sum(dayAdv, 'amount'))}</span></div>` : ''}
+    ${t.days[d] && t.days[d].salary ? `<div class="item"><span>Зарплата<span class="sub">${t.days[d].pays.map(p => esc(p.e.name)).join(', ')}</span></span><span class="num">− ${money(t.days[d].salary)}</span></div>` : ''}
     ${VIEWER ? (dayCash.length || dayAdv.length ? '' : '<p class="sub">Записей нет</p>') : `<form data-form="cash" class="stack" style="margin-top:10px">
       <div class="grid3">
         <label class="fld"><span>Наличные</span><input name="cash" inputmode="decimal" placeholder="0" autocomplete="off"></label>
@@ -337,9 +363,9 @@ function viewCash() {
 }
 function cashMonth(t, m, issues) {
   const before = balanceAt(addDays(m + '-01', -1), t);
-  let inc = 0, exp = 0, adv = 0;
-  t.dates.filter(d => d.startsWith(m)).forEach(d => { const x = t.days[d]; inc += x.cash + x.added; exp += x.expense; adv += x.advance; });
-  const end = before + inc - exp - adv;
+  let inc = 0, exp = 0, adv = 0, sal = 0;
+  t.dates.filter(d => d.startsWith(m)).forEach(d => { const x = t.days[d]; inc += x.cash + x.added; exp += x.expense; adv += x.advance; sal += x.salary; });
+  const end = before + inc - exp - adv - sal;
   const mdates = [...new Set([...t.dates, ...Object.keys(issues)])].filter(d => d.startsWith(m)).sort().reverse();
 
   const summary = `<section class="card"><h2>Итог за ${fmtMonth(m).toLowerCase()}</h2>
@@ -348,6 +374,7 @@ function cashMonth(t, m, issues) {
       <div class="stat"><small>Приход</small><b>${money(inc)}</b></div>
       <div class="stat"><small>Расход</small><b>${money(exp)}</b></div>
       <div class="stat"><small>Аванс</small><b>${money(adv)}</b></div>
+      ${sal ? `<div class="stat"><small>Зарплата</small><b>${money(sal)}</b></div>` : ''}
     </div>
     <div class="big"><span class="muted">Остаток на конец</span><b class="${end < 0 ? 'neg' : ''}">${money(end)}</b></div></section>`;
 
@@ -363,6 +390,7 @@ function cashMonth(t, m, issues) {
       ${x.entries.map(c => { const np = cashPhotos(c.id).length; return `<button class="item" data-act="setDate" data-date="${c.date}">
           <span>${esc(c.note || 'Запись')}${np ? `<span class="sub">📷 ${np}</span>` : ''}</span><span class="num">${cashLine(c)}</span></button>`; }).join('')}
       ${x.advance ? `<button class="item" data-act="setDate" data-date="${d}"><span>Аванс<span class="sub">${x.advs.map(a => esc(empName(a.employeeId))).join(', ')}</span></span><span class="num">− ${money(x.advance)}</span></button>` : ''}
+      ${x.salary ? `<button class="item" data-act="setDate" data-date="${d}"><span>Зарплата<span class="sub">${x.pays.map(p => esc(p.e.name)).join(', ')}</span></span><span class="num">− ${money(x.salary)}</span></button>` : ''}
       ${iss}</section>`;
   }).join('');
 }
@@ -373,28 +401,33 @@ function viewPay() {
   const m = ui.month, pf = ui.payPoint;
   const inM = x => x.date.startsWith(m);
   const foodM = db.food.filter(inM), advM = db.advances.filter(inM);
+  const hasRecs = e => foodM.some(f => f.employeeId === e.id) || advM.some(a => a.employeeId === e.id) || (e.paid && e.paid[m]);
   const emps = db.employees.filter(e => (pf === 'all' || e.pointId === pf) &&
-      (!e.archived || foodM.some(f => f.employeeId === e.id) || advM.some(a => a.employeeId === e.id)))
+      (hasRecs(e) || (!e.archived && workDays(e, m).days > 0)))
     .sort((a, b) => pointName(a.pointId).localeCompare(pointName(b.pointId), 'ru') || byName(a, b));
 
-  let tS = 0, tF = 0, tA = 0;
+  let tS = 0, tF = 0, tA = 0, tP = 0;
   let lastPoint = null;
   const cards = emps.map(e => {
     const fl = foodM.filter(f => f.employeeId === e.id), al = advM.filter(a => a.employeeId === e.id);
-    const s = num(e.salary), f = sum(fl, 'amount'), a = sum(al, 'amount'), pay = s - f - a;
-    tS += s; tF += f; tA += a;
+    const ac = accrued(e, m), s = Math.round(ac.amount), f = sum(fl, 'amount'), a = sum(al, 'amount'), pay = s - f - a;
+    const paid = e.paid && e.paid[m];
+    tS += s; tF += f; tA += a; if (paid) tP += num(paid.amount);
     const hist = [...fl.map(x => ({ d: x.date, t: 'Питание', v: x.amount })), ...al.map(x => ({ d: x.date, t: 'Аванс', v: x.amount }))]
       .sort((p, q) => p.d.localeCompare(q.d));
     const head = pf === 'all' && lastPoint !== e.pointId ? `<div class="group">${esc(pointName(e.pointId))}</div>` : '';
     lastPoint = e.pointId;
     return head + `<details class="card"><summary>
         <span><b>${esc(e.name)}</b>${e.archived ? ' <span class="badge warn">уволен</span>' : ''}<span class="sub">${esc(e.position || '')}</span></span>
-        <span class="topay"><small>к выдаче</small><b class="${pay < 0 ? 'neg' : ''}">${money(pay)}</b></span></summary>
+        <span class="topay">${paid ? `<small class="paidlbl">✓ выдано</small><b>${money(paid.amount)}</b>` : `<small>к выдаче</small><b class="${pay < 0 ? 'neg' : ''}">${money(pay)}</b>`}</span></summary>
       <div class="kv">
         <div class="stat"><small>Зарплата</small><b>${money(s)}</b></div>
         <div class="stat"><small>Питание</small><b>${money(f)}</b></div>
         <div class="stat"><small>Аванс</small><b>${money(a)}</b></div>
       </div>
+      ${ac.days < ac.dim ? `<p class="sub" style="margin-top:6px">Отработано ${ac.days} из ${ac.dim} дн. · оклад ${money(ac.full)}</p>` : ''}
+      ${paid ? `<p class="status ok">Выдано ${money(paid.amount)} · ${fmtShort(paid.date)}${paid.fromCash ? ' · из налички' : ''}${Math.round(num(paid.amount)) !== pay ? ` · по расчёту ${money(pay)}` : ''}</p>` : ''}
+      ${VIEWER ? '' : `<button class="wide ${paid ? '' : 'primary'}" style="margin-top:10px" data-act="paySheet" data-id="${e.id}">${paid ? 'Изменить выдачу' : 'Отметить выдачу'}</button>`}
       <div class="hist">${hist.length ? hist.map(h => `<div><span>${fmtShort(h.d)} · ${h.t}</span><span class="num">${money(h.v)}</span></div>`).join('') : '<div><span class="muted">Записей за месяц нет</span></div>'}</div>
     </details>`;
   }).join('');
@@ -412,6 +445,8 @@ function viewPay() {
       <div class="stat"><small>Питание</small><b>${money(tF)}</b></div>
       <div class="stat"><small>Аванс</small><b>${money(tA)}</b></div>
       <div class="stat"><small>Всего к выдаче</small><b>${money(tS - tF - tA)}</b></div>
+      <div class="stat"><small>Уже выдано</small><b>${money(tP)}</b></div>
+      <div class="stat"><small>Выдано сотрудникам</small><b>${emps.filter(e => e.paid && e.paid[m]).length} из ${emps.length}</b></div>
     </div></section>` +
     (cards || `<section class="card empty"><p>Нет сотрудников. Добавьте их во вкладке «Ещё».</p></section>`) + bossCard;
 }
@@ -608,7 +643,7 @@ function fieldHtml(f) {
   if (f.type === 'check') return `<label class="chk"><input type="checkbox" name="${f.name}"${f.value ? ' checked' : ''}><span>${esc(f.label)}</span></label>`;
   if (f.type === 'note') return `<p class="sub">${esc(f.label)}</p>`;
   if (f.type === 'html') return f.html;
-  const extra = f.type === 'number' ? ' inputmode="decimal" autocomplete="off"' : f.type === 'date' ? ' type="date"' : ' autocomplete="off"';
+  const extra = f.type === 'number' ? ' inputmode="decimal" autocomplete="off"' : f.type === 'date' ? ' type="date"' : f.type === 'month' ? ' type="month"' : ' autocomplete="off"';
   return `<label class="fld">${lab}<input name="${f.name}"${extra} value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder || '')}"></label>`;
 }
 function openSheet({ title, fields, onSave, onDelete, saveLabel, deleteConfirm }) {
@@ -671,13 +706,33 @@ function empSheet(e) {
       { name: 'name', label: 'Имя', value: e.name },
       { name: 'position', label: 'Должность', value: e.position },
       { name: 'pointId', label: 'Точка', type: 'select', options: sortedPoints().map(p => ({ v: p.id, t: p.name })), value: e.pointId },
-      { name: 'salary', label: 'Зарплата в месяц', type: 'number', value: e.salary },
-      ...(isNew ? [] : [{ name: 'archived', label: 'Уволен (скрыть из списков, история останется)', type: 'check', value: e.archived }]),
+      { name: 'salary', label: 'Зарплата в месяц', type: 'number', value: isNew ? '' : salaryFor(e, today().slice(0, 7)) },
+      ...(isNew ? [] : [{ name: 'salaryFrom', label: 'Если меняете зарплату — с какого месяца (прошлые месяцы не изменятся)', type: 'month', value: today().slice(0, 7) }]),
+      { name: 'hired', label: 'Начал работать (необязательно)', type: 'date', value: e.hired },
+      ...(isNew ? [] : [
+        { name: 'fired', label: 'Последний рабочий день (если уволен)', type: 'date', value: e.fired },
+        { name: 'archived', label: 'Уволен (скрыть из списков, история останется)', type: 'check', value: e.archived },
+      ]),
+      ...(Array.isArray(e.salaryHist) && e.salaryHist.length > 1 ? [{ type: 'note', label: 'История зарплаты: ' +
+        [...e.salaryHist].sort((a, b) => a.from.localeCompare(b.from)).map(h => (h.from === '2000-01' ? 'раньше' : 'с ' + fmtMonth(h.from).toLowerCase()) + ' — ' + money(h.amount)).join('; ') }] : []),
       ...(used ? [{ type: 'note', label: 'У сотрудника есть записи, поэтому его нельзя удалить. Отметьте «Уволен».' }] : []),
     ],
     onSave: v => {
       if (!v.name) { toast('Введите имя'); return false; }
-      Object.assign(e, { name: v.name, position: v.position, pointId: v.pointId, salary: num(v.salary), archived: !!v.archived });
+      const newSal = num(v.salary);
+      if (isNew) e.salaryHist = [{ from: '2000-01', amount: newSal }];
+      else {
+        const from = v.salaryFrom || today().slice(0, 7);
+        if (salaryFor(e, from) !== newSal) {
+          let h = Array.isArray(e.salaryHist) && e.salaryHist.length ? e.salaryHist.slice() : [{ from: '2000-01', amount: num(e.salary) }];
+          h = h.filter(x => x.from !== from);
+          h.push({ from, amount: newSal });
+          e.salaryHist = h.sort((a, b) => a.from.localeCompare(b.from));
+        }
+      }
+      if (v.hired && v.fired && v.fired < v.hired) { toast('Дата увольнения раньше даты начала'); return false; }
+      Object.assign(e, { name: v.name, position: v.position, pointId: v.pointId, hired: v.hired || '', fired: v.fired || '', archived: !!v.archived });
+      e.salary = salaryFor(e, '9999-12');
       if (isNew) { e.id = uid(); db.employees.push(e); }
       stamp(e); toast('Сохранено');
     },
@@ -740,6 +795,29 @@ const actions = {
     hydratePhotos();
   },
   setDate: t => { ui.date = t.dataset.date; render(); scrollTo(0, 0); },
+  paySheet: t => {
+    const e = emp(t.dataset.id); if (!e) return;
+    const m = ui.month, cur = e.paid && e.paid[m], inM = x => x.date.startsWith(m) && x.employeeId === e.id;
+    const calc = Math.round(accrued(e, m).amount) - sum(db.food.filter(inM), 'amount') - sum(db.advances.filter(inM), 'amount');
+    const defDate = today().startsWith(m) ? today() : (today() > m ? addDays(addMonths(m, 1) + '-01', -1) : m + '-01');
+    openSheet({
+      title: 'Выдача · ' + e.name + ' · ' + fmtMonth(m).toLowerCase(),
+      fields: [
+        { type: 'note', label: 'По расчёту к выдаче: ' + money(calc) },
+        { name: 'amount', label: 'Выдано', type: 'number', value: cur ? cur.amount : Math.max(0, calc) },
+        { name: 'date', label: 'Дата выдачи', type: 'date', value: cur ? cur.date : defDate },
+        { name: 'fromCash', label: 'Выдано из общей налички (вычесть из остатка)', type: 'check', value: cur ? cur.fromCash : true },
+      ],
+      saveLabel: 'Отметить выдачу',
+      onSave: v => {
+        if (num(v.amount) < 0) { toast('Сумма не может быть меньше нуля'); return false; }
+        e.paid = Object.assign({}, e.paid, { [m]: { amount: num(v.amount), date: v.date || defDate, fromCash: !!v.fromCash } });
+        stamp(e); toast('Выдача отмечена');
+      },
+      onDelete: cur ? () => { const p = Object.assign({}, e.paid); delete p[m]; e.paid = p; stamp(e); } : null,
+      deleteConfirm: 'Отменить отметку о выдаче?',
+    });
+  },
   openPhoto: t => openPhoto(t.dataset.id),
   closePhoto: () => closePhoto(),
   delPhoto: t => {
@@ -770,7 +848,7 @@ const actions = {
   },
 };
 // Действия, которые меняют данные — у начальника недоступны
-const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto']);
+const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet']);
 
 const changes = {
   point: t => { ui.pointId = t.value; saveUi(); render(); },
