@@ -187,7 +187,7 @@ function render() {
     return;
   }
   $('#top').innerHTML = topBar() + syncLine();
-  $('#main').innerHTML = ({ day: viewDay, cash: viewCash, stock: viewStock, pay: viewPay, more: viewMore })[ui.tab]();
+  $('#main').innerHTML = ({ day: viewDay, cash: viewCash, stock: viewStock, report: viewReport, pay: viewPay, more: viewMore })[ui.tab]();
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === ui.tab));
   hydratePhotos();
 }
@@ -254,6 +254,7 @@ function topBar() {
   }
   if (ui.tab === 'cash') return '<h1>Общая наличка</h1>' + dayNav();
   if (ui.tab === 'stock') return '<h1>Склад</h1>' + dayNav();
+  if (ui.tab === 'report') return '<h1>Отчёт</h1>' + monthNav();
   if (ui.tab === 'pay') return (db.points.length > 1 ? pointSelect(ui.payPoint, true, 'payPoint') : '<h1>Зарплата</h1>') + monthNav();
   return VIEWER ? '<h1>Ещё</h1>' : '<h1>Настройки</h1>';
 }
@@ -409,6 +410,151 @@ function cashMonth(t, m, issues) {
       ${x.salary ? `<button class="item" data-act="setDate" data-date="${d}"><span>Зарплата<span class="sub">${x.pays.map(p => esc(p.e.name)).join(', ')}</span></span><span class="num">− ${money(x.salary)}</span></button>` : ''}
       ${iss}</section>`;
   }).join('');
+}
+
+/* ---------- Отчёт: выручка = «Счёт кассы» ---------- */
+const MON_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const shortMonth = m => MON_SHORT[+m.slice(5) - 1] + (m.slice(0, 4) !== today().slice(0, 4) ? " '" + m.slice(2, 4) : '');
+const SERIES = n => `var(--s${(n % 8) + 1})`; // цвет кафе — по его месту в списке точек, всегда один и тот же
+const rev = (pid, from, to) => db.registers.filter(r => r.date >= from && r.date <= to && (!pid || r.pointId === pid)).reduce((a, r) => a + num(r.register), 0);
+function niceMax(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p; return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p; }
+const kfmt = v => v >= 1e6 ? (Math.round(v / 1e5) / 10).toLocaleString('ru-RU') + ' млн' : v >= 1e3 ? (Math.round(v / 100) / 10).toLocaleString('ru-RU') + ' т' : String(Math.round(v));
+
+// Графики: SVG без библиотек; подсказка по касанию/наведению
+let charts = {}, chartSeq = 0;
+function barPath(x, y, w, h) {
+  const r = Math.min(4, w / 2, h), yb = y + h;
+  return `M${x} ${yb}V${y + r}Q${x} ${y} ${x + r} ${y}H${x + w - r}Q${x + w} ${y} ${x + w} ${y + r}V${yb}Z`;
+}
+// Шкала: столбики — от нуля; линии — по диапазону данных, чтобы рост был виден
+function yScale(vals, fromZero) {
+  const hi0 = Math.max(1, ...vals);
+  let lo = fromZero ? 0 : Math.min(...vals);
+  if (!fromZero) lo = Math.max(0, lo - ((hi0 - lo) * 0.25 || hi0 * 0.1));
+  const step = niceMax((hi0 - lo) / 4 || 1);
+  lo = Math.floor(lo / step) * step;
+  let hi = Math.ceil(hi0 / step) * step; if (hi <= lo) hi = lo + step;
+  return { lo, hi, step };
+}
+// opt.partialLast — последний месяц ещё не закончился: пунктир и полая точка
+function chartSvg(kind, labels, series, tips, opt = {}) {
+  const id = 'ch' + (++chartSeq);
+  const W = 340, H = 190, L = 40, R = 8, T = 10, B = 24, pw = W - L - R, ph = H - T - B, n = labels.length;
+  const sc = yScale(series.flatMap(s => s.values.filter(v => v != null)), kind === 'bar');
+  const x = i => kind === 'bar' ? L + pw * (i + 0.5) / n : L + (n === 1 ? pw / 2 : pw * i / (n - 1));
+  const y = v => T + ph - ph * (v - sc.lo) / (sc.hi - sc.lo);
+  charts[id] = { kind, n, L, pw, W, x, tips };
+  let g = '';
+  for (let v = sc.lo; v <= sc.hi + 1e-9; v += sc.step) { const yy = y(v); g += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" class="cgrid${v === sc.lo && !v ? ' cbase' : ''}"/><text x="${L - 5}" y="${yy + 3.5}" class="cylab">${kfmt(v)}</text>`; }
+  const step = Math.ceil(n / 7);
+  labels.forEach((l, i) => { if (i % step === 0 || (kind !== 'bar' && i === n - 1)) g += `<text x="${x(i)}" y="${H - 7}" class="cxlab">${esc(l)}</text>`; });
+  let marks = '';
+  if (kind === 'bar') {
+    const bw = Math.max(2, pw / n - 2);
+    series[0].values.forEach((v, i) => { if (v > 0) { const yy = y(v); marks += `<path d="${barPath(x(i) - bw / 2, yy, bw, T + ph - yy)}" fill="${series[0].color}"/>`; } });
+  } else {
+    const last = opt.partialLast ? n - 1 : n;
+    series.forEach(s => {
+      let d = '', pen = false;
+      s.values.forEach((v, i) => { if (i >= last) return; if (v == null) { pen = false; return; } d += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); pen = true; });
+      marks += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+      if (last < n && n > 1 && s.values[n - 2] != null && s.values[n - 1] != null)
+        marks += `<path d="M${x(n - 2)} ${y(s.values[n - 2])}L${x(n - 1)} ${y(s.values[n - 1])}" fill="none" stroke="${s.color}" stroke-width="2" stroke-dasharray="4 4" stroke-linecap="round"/>`;
+      s.values.forEach((v, i) => { if (v != null) marks += i >= last
+        ? `<circle cx="${x(i)}" cy="${y(v)}" r="3.5" fill="var(--card)" stroke="${s.color}" stroke-width="2"/>`
+        : `<circle cx="${x(i)}" cy="${y(v)}" r="3.5" fill="${s.color}" stroke="var(--card)" stroke-width="2"/>`; });
+    });
+  }
+  return `<div class="chart" data-chart="${id}"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="График">${g}${marks}
+    <line class="ccross" x1="0" x2="0" y1="${T}" y2="${T + ph}" visibility="hidden"/></svg><div class="ctip" hidden></div></div>`;
+}
+function legend(series) {
+  return series.length < 2 ? '' : `<div class="clegend">${series.map(s => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</div>`;
+}
+function chartHover(e) {
+  const box = e.target.closest('.chart'); if (!box) return;
+  const c = charts[box.dataset.chart]; if (!c) return;
+  const svg = box.querySelector('svg'), r = svg.getBoundingClientRect();
+  const sx = (e.clientX - r.left) * c.W / r.width;
+  let i = c.kind === 'bar' ? Math.floor((sx - c.L) / c.pw * c.n) : Math.round((sx - c.L) / c.pw * (c.n - 1));
+  i = Math.max(0, Math.min(c.n - 1, i));
+  const ln = svg.querySelector('.ccross'), px = c.x(i);
+  ln.setAttribute('x1', px); ln.setAttribute('x2', px); ln.setAttribute('visibility', 'visible');
+  const tip = box.querySelector('.ctip'); tip.innerHTML = c.tips[i]; tip.hidden = false;
+  const left = px / c.W * r.width;
+  tip.style.left = Math.max(0, Math.min(r.width - tip.offsetWidth, left - tip.offsetWidth / 2)) + 'px';
+}
+document.addEventListener('pointerdown', chartHover);
+document.addEventListener('pointermove', e => { if (e.pointerType === 'mouse' || e.buttons) chartHover(e); });
+document.addEventListener('pointerout', e => {
+  const box = e.target.closest && e.target.closest('.chart');
+  if (box && e.pointerType === 'mouse' && !box.contains(e.relatedTarget)) { box.querySelector('.ctip').hidden = true; box.querySelector('.ccross').setAttribute('visibility', 'hidden'); }
+});
+
+const pct = (a, b) => b ? Math.round((a - b) / b * 100) : null;
+function deltaHtml(a, b) {
+  const p = pct(a, b);
+  if (p === null) return '<span class="muted">нет данных для сравнения</span>';
+  if (p === 0) return '<span class="muted">без изменений</span>';
+  return `<span class="${p > 0 ? 'up' : 'down'}">${p > 0 ? '▲ +' : '▼ −'}${Math.abs(p)}%</span>`;
+}
+
+function viewReport() {
+  if (!db.points.length) return emptyState();
+  charts = {};
+  const m = ui.month, pts = sortedPoints(), color = {};
+  pts.forEach((p, i) => color[p.id] = SERIES(i));
+  const isCur = m === today().slice(0, 7);
+  // Текущий месяц сравниваем с теми же днями прошлого месяца
+  const endDay = isCur ? +today().slice(8) : +monthEnd(m).slice(8);
+  const pm = addMonths(m, -1), pmEnd = Math.min(endDay, +monthEnd(pm).slice(8));
+  const from = m + '-01', to = m + '-' + pad(endDay), pFrom = pm + '-01', pTo = pm + '-' + pad(pmEnd);
+  const total = rev('', from, monthEnd(m)), prevSame = rev('', pFrom, pTo);
+  const daysWith = new Set(db.registers.filter(r => r.date.startsWith(m) && num(r.register)).map(r => r.date)).size;
+
+  // 12 месяцев до выбранного, без пустых в начале
+  let months = Array.from({ length: 12 }, (_, i) => addMonths(m, i - 11));
+  const firstIdx = months.findIndex(mm => rev('', mm + '-01', monthEnd(mm)) > 0);
+  months = firstIdx < 0 ? [m] : months.slice(Math.min(firstIdx, 11));
+  const mTot = months.map(mm => rev('', mm + '-01', monthEnd(mm)));
+  const partial = months[months.length - 1] === today().slice(0, 7);
+  const partNote = mm => partial && mm === months[months.length - 1] ? `<br><span class="muted">месяц ещё идёт (по ${fmtShort(today())})</span>` : '';
+  const totalChart = chartSvg('line', months.map(shortMonth), [{ name: 'Всего', color: 'var(--s1)', values: mTot }],
+    months.map((mm, i) => `<b>${fmtMonth(mm)}</b><br>Всего: ${money(mTot[i])}${i && !partNote(mm) ? '<br>' + deltaHtml(mTot[i], mTot[i - 1]) + ' к пред. месяцу' : ''}${partNote(mm)}`),
+    { partialLast: partial });
+
+  const ptSeries = pts.map(p => ({ name: p.name, color: color[p.id], values: months.map(mm => rev(p.id, mm + '-01', monthEnd(mm))) }));
+  const ptChart = chartSvg('line', months.map(shortMonth), ptSeries,
+    months.map((mm, i) => `<b>${fmtMonth(mm)}</b>` + ptSeries.map(s => `<br><i class="sw" style="background:${s.color}"></i>${esc(s.name)}: ${money(s.values[i])}`).join('') + partNote(mm)),
+    { partialLast: partial });
+  const partialHint = partial ? '<p class="sub" style="margin-top:6px">Пунктир — текущий месяц, он ещё не закончился.</p>' : '';
+
+  // По дням выбранного месяца
+  const dim = +monthEnd(m).slice(8), days = Array.from({ length: dim }, (_, i) => m + '-' + pad(i + 1));
+  const dTot = days.map(d => rev('', d, d));
+  const dayChart = chartSvg('bar', days.map(d => String(+d.slice(8))), [{ name: 'Всего', color: 'var(--s1)', values: dTot }],
+    days.map((d, i) => `<b>${fmtDay(d)}</b><br>Всего: ${money(dTot[i])}` + (dTot[i] ? pts.map(p => { const v = rev(p.id, d, d); return v ? `<br><i class="sw" style="background:${color[p.id]}"></i>${esc(p.name)}: ${money(v)}` : ''; }).join('') : '<br><span class="muted">касса не внесена</span>')));
+
+  // Таблица по кафе
+  const rows = pts.map(p => {
+    const cur = rev(p.id, from, monthEnd(m)), prev = rev(p.id, pFrom, pTo);
+    const dvals = days.map(d => rev(p.id, d, d)), n = dvals.filter(v => v > 0).length, best = Math.max(0, ...dvals);
+    return { p, cur, prev, avg: n ? cur / n : 0, best, bestDay: best ? days[dvals.indexOf(best)] : '' };
+  });
+
+  return `<section class="card"><h2>Выручка за ${fmtMonth(m).toLowerCase()}</h2>
+      <div class="hero"><b>${money(total)}</b>${deltaHtml(rev('', from, to), prevSame)}</div>
+      <p class="sub">${prevSame ? `сравнение с 1–${pmEnd} ${MONTHS_GEN[+pm.slice(5) - 1]}: ${money(prevSame)}` : ''}${daysWith ? ` · в среднем ${money(total / daysWith)} за день (${daysWith} дн. с данными)` : ''}</p>
+    </section>
+    <section class="card"><h2>По кафе</h2>
+      <div class="ptable">${rows.map(r => `<div class="item"><span><i class="sw" style="background:${color[r.p.id]}"></i>${esc(r.p.name)}
+        <span class="sub">ср. ${money(r.avg)}/день${r.best ? ' · лучший ' + fmtShort(r.bestDay) + ': ' + money(r.best) : ''}</span></span>
+        <span class="num rt">${money(r.cur)}<small>${deltaHtml(rev(r.p.id, from, to), r.prev)}</small></span></div>`).join('')}</div>
+    </section>
+    <section class="card"><h2>Рост по месяцам — все кафе</h2>${totalChart}${partialHint}</section>
+    <section class="card"><h2>Рост по месяцам — каждое кафе</h2>${legend(ptSeries)}${ptChart}${partialHint}</section>
+    <section class="card"><h2>По дням · ${fmtMonth(m).toLowerCase()}</h2>${dayChart}
+      <p class="sub" style="margin-top:6px">Нажмите на график, чтобы увидеть сумму. Выручка = «Счёт кассы» на вкладке «День».</p></section>`;
 }
 
 /* ---------- Склад ---------- */
