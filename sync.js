@@ -91,11 +91,19 @@ async function push() {
   d.deleted.forEach(t => {
     if (!t.synced) items.push({ col: t.col, tomb: t, data: { id: t.id, deleted: true, updatedAt: t.updatedAt } });
   });
-  if (!items.length) { App.setSync({ status: navigator.onLine ? 'ok' : 'offline', lastOk: Date.now() }); return; }
+  let photos = [];
+  try { photos = await App.photoQueue(); } catch (e) {}
+  if (!items.length && !photos.length) { App.setSync({ status: navigator.onLine ? 'ok' : 'offline', lastOk: Date.now() }); return; }
 
   pushing = true;
   App.setSync({ status: navigator.onLine ? 'busy' : 'offline' });
   try {
+    // Фото — каждое отдельным документом (до 1 МБ)
+    for (const p of photos) {
+      const data = p.deleted ? { id: p.id, deleted: true, updatedAt: Date.now() } : { id: p.id, data: p.data, updatedAt: Date.now() };
+      await F.setDoc(F.doc(fs, 'biz', 'main', 'photoData', p.id), data);
+      await App.photoSynced(p);
+    }
     for (let i = 0; i < items.length; i += 400) {
       const batch = F.writeBatch(fs);
       items.slice(i, i + 400).forEach(it => batch.set(F.doc(fs, 'biz', 'main', it.col, it.data.id), it.data));
@@ -148,5 +156,12 @@ async function signOut() {
   App.setSync({ user: null, status: 'off', error: '' });
 }
 
-window.Sync = { schedulePush, signIn, signOut };
+// Фото загружаем только когда его нужно показать
+async function getPhoto(id) {
+  if (!fs || !user) return null;
+  const s = await F.getDoc(F.doc(fs, 'biz', 'main', 'photoData', id));
+  return s.exists() ? s.data() : null;
+}
+
+window.Sync = { schedulePush, signIn, signOut, getPhoto };
 if (cfg) start();

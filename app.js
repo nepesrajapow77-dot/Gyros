@@ -2,7 +2,7 @@
 /* ================= Данные ================= */
 const VIEWER = !!window.VIEWER;   // режим начальника: только просмотр
 const KEY = VIEWER ? 'buh.view.v1' : 'buh.v1', UIKEY = VIEWER ? 'buh.view.ui' : 'buh.ui';
-const COLS = ['points', 'employees', 'registers', 'food', 'advances', 'cash'];
+const COLS = ['points', 'employees', 'registers', 'food', 'advances', 'cash', 'photos'];
 const BOSS = '__boss', BOSS_NAME = 'Знакомые начальника';
 
 const $ = s => document.querySelector(s);
@@ -28,7 +28,7 @@ const fmtShort = s => s.slice(8, 10) + '.' + s.slice(5, 7);
 const fmtMonth = m => { const [y, mm] = m.split('-').map(Number); return MONTHS[mm - 1] + ' ' + y; };
 
 // deleted — пометки об удалении для синхронизации; sync — что уже отправлено/получено
-function emptyDb() { return { version: 2, points: [], employees: [], registers: [], food: [], advances: [], cash: [], deleted: [], lastBackup: 0, sync: { lastPush: 0, pull: {} } }; }
+function emptyDb() { return { version: 2, points: [], employees: [], registers: [], food: [], advances: [], cash: [], photos: [], deleted: [], lastBackup: 0, sync: { lastPush: 0, pull: {} } }; }
 function normalizeDb(d) {
   d = Object.assign(emptyDb(), d);
   if (!d.sync || typeof d.sync !== 'object') d.sync = { lastPush: 0, pull: {} };
@@ -82,7 +82,9 @@ window.App = {
   applyRemote(col, docs) { const ch = applyRemote(col, docs); if (ch) { save(true); safeRender(); } return ch; },
   saveSyncMeta() { save(true); },
   setSync(s) { Object.assign(syncState, s); safeRender(); },
-  resetLocal() { db = emptyDb(); save(true); render(); },
+  resetLocal() { db = emptyDb(); save(true); PDB.clear().catch(() => {}); render(); },
+  photoQueue: () => PDB.all().then(a => a.filter(x => !x.synced)),
+  photoSynced: p => p.deleted ? PDB.del(p.id) : PDB.put(Object.assign({}, p, { synced: true })),
   toast: m => toast(m),
 };
 
@@ -149,6 +151,7 @@ function render() {
   $('#top').innerHTML = topBar() + syncLine();
   $('#main').innerHTML = ({ day: viewDay, cash: viewCash, pay: viewPay, more: viewMore })[ui.tab]();
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === ui.tab));
+  hydratePhotos();
 }
 // Не перерисовываем, пока человек вводит текст — дождёмся, когда закончит
 let renderPending = false;
@@ -259,6 +262,7 @@ function viewDay() {
   const foods = db.food.filter(f => f.date === d && f.pointId === pid);
   const advs = db.advances.filter(a => a.date === d && a.pointId === pid);
   const cashs = db.cash.filter(c => c.date === d && c.pointId === pid);
+  const dayPhotos = db.photos.filter(p => p.date === d && p.pointId === pid && !p.cashId);
   const people = peopleOpts(pid, false);
   const foodPeople = peopleOpts(pid, true);
   const noPeople = !people.length ? `<p class="status muted">У этой точки нет сотрудников. Добавьте их во вкладке «Ещё».</p>` : '';
@@ -296,7 +300,7 @@ function viewDay() {
   </section>
 
   <section class="card"><h2>Наличка с точки</h2>
-    ${cashs.map(c => `<button class="item" data-act="editCash" data-id="${c.id}"><span>${esc(c.note || 'Запись')}</span><span class="num">${cashLine(c)}</span></button>`).join('')}
+    ${cashs.map(c => `<button class="item" data-act="editCash" data-id="${c.id}"><span>${esc(c.note || 'Запись')}</span><span class="num">${cashLine(c)}</span></button>` + photoGrid(cashPhotos(c.id))).join('')}
     ${VIEWER ? (cashs.length ? '' : '<p class="sub">Записей нет</p>') : `<form data-form="cash" class="stack" style="margin-top:10px">
       <div class="grid3">
         <label class="fld"><span>Наличные</span><input name="cash" inputmode="decimal" placeholder="0" autocomplete="off"></label>
@@ -304,9 +308,17 @@ function viewDay() {
         <label class="fld"><span>Расход</span><input name="expense" inputmode="decimal" placeholder="0" autocomplete="off"></label>
       </div>
       <input name="note" placeholder="Комментарий (на что расход)" autocomplete="off">
+      <label class="filebtn photobtn">📷 Фото чека<span id="cashPhotoCount"></span>
+        <input type="file" accept="image/*" multiple data-change="cashFormPhotos"></label>
       <button class="primary">Добавить</button>
     </form>`}
     <div class="total">Общая наличка на конец дня: <b>${money(balanceAt(d, t))}</b></div>
+  </section>
+
+  <section class="card"><h2>Фото за день <span class="badge">${dayPhotos.length}</span></h2>
+    ${dayPhotos.length ? photoGrid(dayPhotos) : `<p class="sub">${VIEWER ? 'Фото нет' : 'Чек-листы, накладные и всё, что нужно сохранить за этот день'}</p>`}
+    ${VIEWER ? '' : `<label class="filebtn photobtn" style="margin-top:8px">📷 Добавить фото
+      <input type="file" accept="image/*" multiple data-change="dayPhotos"></label>`}
   </section>`;
 }
 
@@ -337,8 +349,8 @@ function viewCash() {
     if (!x) return `<section class="card"><div class="dayhead"><b>${fmtDay(d)}</b></div>${iss}</section>`;
     return `<section class="card">
       <div class="dayhead"><b>${fmtDay(d)}</b><span class="muted">остаток <b class="num ${x.balance < 0 ? 'neg' : ''}" style="color:inherit">${money(x.balance)}</b></span></div>
-      ${x.entries.map(c => `<button class="item" data-act="editCash" data-id="${c.id}">
-          <span>${esc(pointName(c.pointId))}${c.note ? `<span class="sub">${esc(c.note)}</span>` : ''}</span><span class="num">${cashLine(c)}</span></button>`).join('')}
+      ${x.entries.map(c => { const np = cashPhotos(c.id).length; return `<button class="item" data-act="${VIEWER ? 'goDay' : 'editCash'}" data-id="${c.id}" data-date="${c.date}" data-point="${c.pointId}">
+          <span>${esc(pointName(c.pointId))}${c.note || np ? `<span class="sub">${esc(c.note || '')}${np ? ' 📷' + np : ''}</span>` : ''}</span><span class="num">${cashLine(c)}</span></button>`; }).join('')}
       ${x.advance ? `<button class="item" data-act="goDay" data-date="${d}" data-point="${x.advs[0].pointId}"><span>Аванс<span class="sub">${x.advs.map(a => esc(empName(a.employeeId))).join(', ')}</span></span><span class="num">− ${money(x.advance)}</span></button>` : ''}
       ${iss}</section>`;
   }).join('');
@@ -467,12 +479,124 @@ function cloudCard() {
     <button class="ghost" data-act="logout">Выйти из облака</button></div></section>`;
 }
 
+/* ================= Фото ================= */
+// Фото хранятся в IndexedDB телефона (там много места), в облако уходят отдельно.
+const PDB = (() => {
+  let op;
+  const open = () => op || (op = new Promise((res, rej) => {
+    const r = indexedDB.open(VIEWER ? 'kassa-view-photos' : 'kassa-photos', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('p', { keyPath: 'id' });
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  }));
+  const run = (mode, fn) => open().then(d => new Promise((res, rej) => {
+    const t = d.transaction('p', mode); const req = fn(t.objectStore('p'));
+    t.oncomplete = () => res(req ? req.result : undefined); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+  }));
+  return {
+    get: id => run('readonly', s => s.get(id)),
+    put: rec => run('readwrite', s => s.put(rec)),
+    del: id => run('readwrite', s => s.delete(id)),
+    all: () => run('readonly', s => s.getAll()),
+    clear: () => run('readwrite', s => s.clear()),
+  };
+})();
+const photoUrl = {};
+const cashPhotos = cid => db.photos.filter(p => p.cashId === cid);
+
+function photoGrid(list) {
+  if (!list.length) return '';
+  return `<div class="phgrid">${list.map(p => `<button type="button" class="ph" data-act="openPhoto" data-id="${p.id}"><img data-photo="${p.id}" alt="Фото"></button>`).join('')}</div>`;
+}
+function hydratePhotos() {
+  document.querySelectorAll('img[data-photo]:not([src])').forEach(img => {
+    if (img.dataset.loading) return;
+    img.dataset.loading = '1';
+    loadPhoto(img.dataset.photo).then(src => {
+      delete img.dataset.loading;
+      if (src) img.src = src; else img.parentElement.classList.add('missing');
+    });
+  });
+}
+async function loadPhoto(id) {
+  if (photoUrl[id]) return photoUrl[id];
+  let r = null;
+  try { r = await PDB.get(id); } catch (e) {}
+  if ((!r || !r.data) && window.Sync && window.Sync.getPhoto) {
+    const d = await window.Sync.getPhoto(id).catch(() => null);
+    if (d && d.data) { r = { id, data: d.data, synced: true }; PDB.put(r).catch(() => {}); }
+  }
+  return r && r.data ? (photoUrl[id] = r.data) : null;
+}
+// Сжимаем: до 1280 px, JPEG. Чек остаётся читаемым, весит ~150–300 КБ.
+function compressImage(file) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let max = 1280, q = 0.7;
+      const draw = () => {
+        const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        return c.toDataURL('image/jpeg', q);
+      };
+      let out = draw();
+      while (out.length > 700000 && max > 500) { max = Math.round(max * 0.8); q = Math.max(0.5, q - 0.05); out = draw(); }
+      res(out);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('bad image')); };
+    img.src = url;
+  });
+}
+async function addPhotos(files, link) {
+  if (!files.length) return;
+  toast('Сохраняем фото…');
+  let n = 0;
+  for (const f of files) {
+    try {
+      const data = await compressImage(f);
+      const id = uid();
+      await PDB.put({ id, data, synced: false });
+      photoUrl[id] = data;
+      db.photos.push(stamp({ id, date: link.date, pointId: link.pointId, cashId: link.cashId || '' }));
+      n++;
+    } catch (e) { toast('Не удалось сохранить фото'); }
+  }
+  if (n) { save(); safeRender(); toast(n === 1 ? 'Фото добавлено' : 'Добавлено фото: ' + n); }
+}
+function removePhoto(p) {
+  removeRec('photos', p);
+  delete photoUrl[p.id];
+  PDB.put({ id: p.id, data: null, deleted: true, synced: false }).catch(() => {});
+}
+function refreshSheetPhotos(cid) {
+  const el = $('#sheetPhotos');
+  if (el && cid) { el.innerHTML = photoGrid(cashPhotos(cid)) || '<p class="sub">Нет фото</p>'; hydratePhotos(); }
+}
+function openPhoto(id) {
+  closePhoto();
+  const p = db.photos.find(x => x.id === id);
+  const v = document.createElement('div');
+  v.id = 'photoView';
+  v.innerHTML = `<div class="pv-wrap"><img alt="Фото"></div>
+    <div class="pv-bar">${p ? `<span class="pv-cap">${esc(pointName(p.pointId))} · ${fmtShort(p.date)}</span>` : ''}
+    ${VIEWER ? '' : `<button class="danger" data-act="delPhoto" data-id="${id}">Удалить</button>`}
+    <button class="primary" data-act="closePhoto">Закрыть</button></div>`;
+  document.body.appendChild(v);
+  const img = v.querySelector('img');
+  img.onclick = () => img.classList.toggle('zoom');
+  loadPhoto(id).then(src => { if (src) img.src = src; else toast('Фото ещё не загружено'); });
+}
+function closePhoto() { const v = $('#photoView'); if (v) v.remove(); }
+
 /* ================= Окно редактирования ================= */
 function fieldHtml(f) {
   const lab = `<span>${esc(f.label)}</span>`;
   if (f.type === 'select') return `<label class="fld">${lab}<select name="${f.name}">${opts(f.options, f.value)}</select></label>`;
   if (f.type === 'check') return `<label class="chk"><input type="checkbox" name="${f.name}"${f.value ? ' checked' : ''}><span>${esc(f.label)}</span></label>`;
   if (f.type === 'note') return `<p class="sub">${esc(f.label)}</p>`;
+  if (f.type === 'html') return f.html;
   const extra = f.type === 'number' ? ' inputmode="decimal" autocomplete="off"' : f.type === 'date' ? ' type="date"' : ' autocomplete="off"';
   return `<label class="fld">${lab}<input name="${f.name}"${extra} value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder || '')}"></label>`;
 }
@@ -594,10 +718,23 @@ const actions = {
         { name: 'note', label: 'Комментарий', value: c.note },
         { name: 'pointId', label: 'Точка', type: 'select', options: sortedPoints().map(p => ({ v: p.id, t: p.name })), value: c.pointId },
         { name: 'date', label: 'Дата', type: 'date', value: c.date },
+        { type: 'html', html: `<div class="fld"><span>Фото чека</span><div id="sheetPhotos">${photoGrid(cashPhotos(c.id)) || '<p class="sub">Нет фото</p>'}</div>
+          <label class="filebtn photobtn">📷 Добавить фото<input type="file" accept="image/*" multiple data-change="cashPhotos" data-id="${c.id}"></label></div>` },
       ],
-      onSave: v => { Object.assign(c, { cash: num(v.cash), added: num(v.added), expense: num(v.expense), note: v.note, pointId: v.pointId, date: v.date || c.date }); stamp(c); },
-      onDelete: () => removeRec('cash', c),
+      onSave: v => {
+        Object.assign(c, { cash: num(v.cash), added: num(v.added), expense: num(v.expense), note: v.note, pointId: v.pointId, date: v.date || c.date }); stamp(c);
+        cashPhotos(c.id).forEach(p => { if (p.date !== c.date || p.pointId !== c.pointId) { p.date = c.date; p.pointId = c.pointId; stamp(p); } });
+      },
+      onDelete: () => { cashPhotos(c.id).forEach(removePhoto); removeRec('cash', c); },
     });
+    hydratePhotos();
+  },
+  openPhoto: t => openPhoto(t.dataset.id),
+  closePhoto: () => closePhoto(),
+  delPhoto: t => {
+    const p = db.photos.find(x => x.id === t.dataset.id); if (!p) return;
+    if (!confirm('Удалить фото?')) return;
+    removePhoto(p); save(); closePhoto(); refreshSheetPhotos(p.cashId); safeRender(); toast('Фото удалено');
   },
   addPoint: () => pointSheet(null),
   editPoint: t => pointSheet(point(t.dataset.id)),
@@ -622,7 +759,7 @@ const actions = {
   },
 };
 // Действия, которые меняют данные — у начальника недоступны
-const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export']);
+const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto']);
 
 const changes = {
   point: t => { ui.pointId = t.value; saveUi(); render(); },
@@ -643,7 +780,17 @@ const changes = {
     save(); render(); toast('Восстановлено');
   }),
   importOld: t => readFiles(t.files).then(files => { t.value = ''; importOld(files); }),
+  dayPhotos: t => { const fl = [...t.files]; t.value = ''; addPhotos(fl, { date: ui.date, pointId: ui.pointId }); },
+  cashPhotos: t => {
+    const c = db.cash.find(x => x.id === t.dataset.id); const fl = [...t.files]; t.value = '';
+    if (c) addPhotos(fl, { date: c.date, pointId: c.pointId, cashId: c.id }).then(() => refreshSheetPhotos(c.id));
+  },
+  cashFormPhotos: t => {
+    pendingCashFiles = [...t.files];
+    const el = $('#cashPhotoCount'); if (el) el.textContent = pendingCashFiles.length ? ' · выбрано: ' + pendingCashFiles.length : '';
+  },
 };
+let pendingCashFiles = [];
 
 const forms = {
   login: f => {
@@ -656,9 +803,12 @@ const forms = {
   adv: f => addAmount(f, 'adv'),
   cash: f => {
     const v = k => num(f.elements[k].value);
-    if (!v('cash') && !v('added') && !v('expense')) { toast('Введите хотя бы одну сумму'); return; }
-    db.cash.push(stamp({ id: uid(), date: ui.date, pointId: ui.pointId, cash: v('cash'), added: v('added'), expense: v('expense'), note: f.elements.note.value.trim() }));
+    const files = pendingCashFiles; pendingCashFiles = [];
+    if (!v('cash') && !v('added') && !v('expense') && !files.length) { toast('Введите хотя бы одну сумму'); return; }
+    const c = stamp({ id: uid(), date: ui.date, pointId: ui.pointId, cash: v('cash'), added: v('added'), expense: v('expense'), note: f.elements.note.value.trim() });
+    db.cash.push(c);
     save(); render(); toast('Добавлено');
+    if (files.length) addPhotos(files, { date: c.date, pointId: c.pointId, cashId: c.id });
   },
 };
 
