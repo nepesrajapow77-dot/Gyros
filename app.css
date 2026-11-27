@@ -129,3 +129,5 @@ button:disabled{opacity:.6}
 .backupnote{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0;padding:12px 14px}
 .backupnote button{flex:0 0 auto;min-height:40px}
 details.card summary .badge{background:var(--bg)}
+.stockm .sub{line-height:1.5}
+.neg{color:var(--bad)}

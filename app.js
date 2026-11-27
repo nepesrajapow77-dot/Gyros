@@ -2,7 +2,7 @@
 /* ================= Данные ================= */
 const VIEWER = !!window.VIEWER;   // режим начальника: только просмотр
 const KEY = VIEWER ? 'buh.view.v1' : 'buh.v1', UIKEY = VIEWER ? 'buh.view.ui' : 'buh.ui';
-const COLS = ['points', 'employees', 'registers', 'food', 'advances', 'cash', 'photos'];
+const COLS = ['points', 'employees', 'registers', 'food', 'advances', 'cash', 'photos', 'products', 'stock', 'cats'];
 const BOSS = '__boss', BOSS_NAME = 'Знакомые начальника';
 
 const $ = s => document.querySelector(s);
@@ -28,7 +28,7 @@ const fmtShort = s => s.slice(8, 10) + '.' + s.slice(5, 7);
 const fmtMonth = m => { const [y, mm] = m.split('-').map(Number); return MONTHS[mm - 1] + ' ' + y; };
 
 // deleted — пометки об удалении для синхронизации; sync — что уже отправлено/получено
-function emptyDb() { return { version: 2, points: [], employees: [], registers: [], food: [], advances: [], cash: [], photos: [], deleted: [], lastBackup: 0, sync: { lastPush: 0, pull: {} } }; }
+function emptyDb() { return { version: 2, points: [], employees: [], registers: [], food: [], advances: [], cash: [], photos: [], products: [], stock: [], cats: [], deleted: [], lastBackup: 0, sync: { lastPush: 0, pull: {} } }; }
 function normalizeDb(d) {
   d = Object.assign(emptyDb(), d);
   if (!d.sync || typeof d.sync !== 'object') d.sync = { lastPush: 0, pull: {} };
@@ -187,7 +187,7 @@ function render() {
     return;
   }
   $('#top').innerHTML = topBar() + syncLine();
-  $('#main').innerHTML = ({ day: viewDay, cash: viewCash, pay: viewPay, more: viewMore })[ui.tab]();
+  $('#main').innerHTML = ({ day: viewDay, cash: viewCash, stock: viewStock, pay: viewPay, more: viewMore })[ui.tab]();
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.tab === ui.tab));
   hydratePhotos();
 }
@@ -253,6 +253,7 @@ function topBar() {
     return pointSelect(ui.pointId, false, 'point') + dayNav();
   }
   if (ui.tab === 'cash') return '<h1>Общая наличка</h1>' + dayNav();
+  if (ui.tab === 'stock') return '<h1>Склад</h1>' + dayNav();
   if (ui.tab === 'pay') return (db.points.length > 1 ? pointSelect(ui.payPoint, true, 'payPoint') : '<h1>Зарплата</h1>') + monthNav();
   return VIEWER ? '<h1>Ещё</h1>' : '<h1>Настройки</h1>';
 }
@@ -356,7 +357,7 @@ function viewCash() {
   const dayCash = db.cash.filter(c => c.date === d);
   const dayAdv = db.advances.filter(a => a.date === d);
   const dayCard = `<section class="card"><h2>${d === today() ? 'Сегодня' : fmtDay(d)}</h2>
-    ${dayCash.map(c => `<button class="item" ${VIEWER ? '' : `data-act="editCash" data-id="${c.id}"`}><span>${esc(c.note || 'Запись')}</span><span class="num">${cashLine(c)}</span></button>` + photoGrid(cashPhotos(c.id))).join('')}
+    ${dayCash.map(c => `<button class="item" ${VIEWER ? '' : `data-act="editCash" data-id="${c.id}"`}><span>${esc(c.note || catName(c.catId) || 'Запись')}${c.note && catName(c.catId) ? `<span class="sub">${esc(catName(c.catId))}</span>` : ''}</span><span class="num">${cashLine(c)}</span></button>` + photoGrid(cashPhotos(c.id))).join('')}
     ${dayAdv.length ? `<div class="item"><span>Аванс<span class="sub">${dayAdv.map(a => esc(empName(a.employeeId))).join(', ')}</span></span><span class="num">− ${money(sum(dayAdv, 'amount'))}</span></div>` : ''}
     ${t.days[d] && t.days[d].salary ? `<div class="item"><span>Зарплата<span class="sub">${t.days[d].pays.map(p => esc(p.e.name)).join(', ')}</span></span><span class="num">− ${money(t.days[d].salary)}</span></div>` : ''}
     ${VIEWER ? (dayCash.length || dayAdv.length ? '' : '<p class="sub">Записей нет</p>') : `<form data-form="cash" class="stack" style="margin-top:10px">
@@ -365,7 +366,8 @@ function viewCash() {
         <label class="fld"><span>Добавлено</span><input name="added" inputmode="decimal" placeholder="0" autocomplete="off"></label>
         <label class="fld"><span>Расход</span><input name="expense" inputmode="decimal" placeholder="0" autocomplete="off"></label>
       </div>
-      <input name="note" placeholder="Комментарий (на что расход)" autocomplete="off">
+      <div class="grid2"><select name="cat" aria-label="Категория">${opts(catOpts(), '')}</select>
+        <input name="note" placeholder="Комментарий" autocomplete="off"></div>
       <label class="filebtn photobtn">📷 Фото чека<span id="cashPhotoCount"></span>
         <input type="file" accept="image/*" multiple data-change="cashFormPhotos"></label>
       <button class="primary">Добавить</button>
@@ -381,7 +383,7 @@ function cashMonth(t, m, issues) {
   const end = before + inc - exp - adv - sal;
   const mdates = [...new Set([...t.dates, ...Object.keys(issues)])].filter(d => d.startsWith(m)).sort().reverse();
 
-  const summary = `<section class="card"><h2>Итог за ${fmtMonth(m).toLowerCase()}</h2>
+  let summary = `<section class="card"><h2>Итог за ${fmtMonth(m).toLowerCase()}</h2>
     <div class="stats">
       <div class="stat"><small>На начало</small><b>${money(before)}</b></div>
       <div class="stat"><small>Приход</small><b>${money(inc)}</b></div>
@@ -391,6 +393,7 @@ function cashMonth(t, m, issues) {
     </div>
     <div class="big"><span class="muted">Остаток на конец</span><b class="${end < 0 ? 'neg' : ''}">${money(end)}</b></div></section>`;
 
+  summary += catSummary(m);
   if (!mdates.length) return summary + `<section class="card empty"><p>В этом месяце записей нет.</p></section>`;
 
   return summary + mdates.map(d => {
@@ -406,6 +409,208 @@ function cashMonth(t, m, issues) {
       ${x.salary ? `<button class="item" data-act="setDate" data-date="${d}"><span>Зарплата<span class="sub">${x.pays.map(p => esc(p.e.name)).join(', ')}</span></span><span class="num">− ${money(x.salary)}</span></button>` : ''}
       ${iss}</section>`;
   }).join('');
+}
+
+/* ---------- Склад ---------- */
+// stock: { date, kind, productId, qty, pointId?, amount?, fromCash?, cashId?, createdAt }
+//   in — приход на склад; out — выдача на точку; wcount — пересчёт склада (qty = факт);
+//   pcount — пересчёт на точке (qty = сколько осталось на точке)
+const prod = id => db.products.find(p => p.id === id);
+const prodName = id => prod(id)?.name || '(продукт удалён)';
+const unitOf = id => prod(id)?.unit || '';
+const qtyStr = (n, pid) => (Math.round(num(n) * 1000) / 1000).toLocaleString('ru-RU') + (pid ? ' ' + unitOf(pid) : '');
+const sortedProducts = all => db.products.filter(p => all || !p.archived).sort(byName);
+const stockSort = (a, b) => a.date.localeCompare(b.date) || (a.createdAt || 0) - (b.createdAt || 0);
+
+// Остаток на складе на конец даты и списания по пересчётам
+function whLedger(pid, upTo) {
+  let rest = 0; const off = [];
+  db.stock.filter(s => s.productId === pid && s.kind !== 'pcount' && (!upTo || s.date <= upTo)).sort(stockSort).forEach(s => {
+    if (s.kind === 'in') rest += num(s.qty);
+    else if (s.kind === 'out') rest -= num(s.qty);
+    else if (s.kind === 'wcount') { off.push({ date: s.date, qty: rest - num(s.qty) }); rest = num(s.qty); }
+  });
+  return { rest, off };
+}
+// Остаток на точке по последнему пересчёту (нет пересчёта — считаем, что всё израсходовано)
+function pointStockAt(point, pid, date) {
+  let best = null;
+  db.stock.forEach(s => { if (s.kind === 'pcount' && s.pointId === point && s.productId === pid && s.date <= date && (!best || stockSort(best, s) < 0)) best = s; });
+  return best ? num(best.qty) : 0;
+}
+// Расход точки за период: выдано + остаток на начало − остаток на конец
+function pointUse(point, pid, from, to) {
+  const issued = db.stock.filter(s => s.kind === 'out' && s.pointId === point && s.productId === pid && s.date >= from && s.date <= to).reduce((a, s) => a + num(s.qty), 0);
+  const start = pointStockAt(point, pid, addDays(from, -1)), end = pointStockAt(point, pid, to);
+  return { issued, use: issued + start - end, start, end };
+}
+function monthEnd(m) { const [y, mm] = m.split('-').map(Number); return m + '-' + pad(new Date(y, mm, 0).getDate()); }
+// Сводка по продукту за месяц
+function stockMonth(pid, m) {
+  const from = m + '-01', to = monthEnd(m), inM = s => s.productId === pid && s.date >= from && s.date <= to;
+  const income = db.stock.filter(s => inM(s) && s.kind === 'in').reduce((a, s) => a + num(s.qty), 0);
+  const spent = db.stock.filter(s => inM(s) && s.kind === 'in').reduce((a, s) => a + num(s.amount), 0);
+  const pts = sortedPoints().map(p => Object.assign({ p }, pointUse(p.id, pid, from, to)));
+  const off = whLedger(pid, to).off.filter(o => o.date >= from).reduce((a, o) => a + o.qty, 0);
+  return { income, spent, pts, off, start: whLedger(pid, addDays(from, -1)).rest, end: whLedger(pid, to).rest,
+    total: pts.reduce((a, x) => a + x.use, 0) + off };
+}
+
+function stockLine(s) {
+  const n = prodName(s.productId), q = qtyStr(s.qty, s.productId);
+  if (s.kind === 'in') return ['Приход · ' + n, q + (num(s.amount) ? ' · ' + money(s.amount) + (s.fromCash ? ' (из налички)' : '') : '')];
+  if (s.kind === 'out') return ['Выдано → ' + pointName(s.pointId) + ' · ' + n, q];
+  if (s.kind === 'wcount') return ['Пересчёт склада · ' + n, 'факт ' + q];
+  return ['Пересчёт ' + pointName(s.pointId) + ' · ' + n, 'осталось ' + q];
+}
+
+function viewStock() {
+  const d = ui.date, m = d.slice(0, 7), prods = sortedProducts();
+  if (!prods.length) return VIEWER ? `<section class="card empty"><p>Продукты ещё не добавлены.</p></section>`
+    : `<section class="card empty"><h3>Склад</h3><p>Добавьте продукты, которые храните на складе: название и единицу (кг, шт, л).</p>
+       <button class="primary" data-act="addProduct">+ Добавить продукт</button></section>`;
+
+  const rests = prods.map(p => ({ p, rest: whLedger(p.id, d).rest }));
+  const restCard = `<section class="card"><h2>Остаток на складе <span class="muted">на ${fmtShort(d)}</span></h2>
+    ${rests.map(({ p, rest }) => { const low = rest < 0 ? 'bad' : num(p.minQty) && rest <= num(p.minQty) ? 'warn' : '';
+      return `<div class="item"><span>${esc(p.name)}${low ? ` <span class="badge ${low}">${rest < 0 ? 'меньше нуля' : 'мало'}</span>` : ''}</span><span class="num">${qtyStr(rest, p.id)}</span></div>`; }).join('')}
+  </section>`;
+
+  const pOpts = opts(prods.map(p => ({ v: p.id, t: p.name + ' (' + p.unit + ')' })), ui.stockProd);
+  const forms = VIEWER ? '' : `<section class="card"><h2>Записать</h2>
+    <form data-form="stockOut" class="stack">
+      <span class="fld"><span>Выдать на точку</span></span>
+      <div class="grid2"><select name="point" aria-label="Точка">${opts(sortedPoints().map(p => ({ v: p.id, t: p.name })), ui.stockPoint)}</select>
+        <select name="prod" aria-label="Продукт">${pOpts}</select></div>
+      <div class="quick" style="margin-top:0"><input name="qty" inputmode="decimal" placeholder="Сколько" autocomplete="off" aria-label="Сколько">
+        <button class="primary" style="flex:0 0 auto;font-size:16px;padding:0 16px">Выдать</button></div>
+    </form>
+    <form data-form="stockIn" class="stack" style="margin-top:14px">
+      <span class="fld"><span>Приход на склад</span></span>
+      <select name="prod" aria-label="Продукт">${pOpts}</select>
+      <div class="grid2"><input name="qty" inputmode="decimal" placeholder="Сколько" autocomplete="off" aria-label="Сколько">
+        <input name="amount" inputmode="decimal" placeholder="Сумма (необяз.)" autocomplete="off" aria-label="Сумма"></div>
+      <label class="chk"><input type="checkbox" name="fromCash" checked><span>Оплачено из налички (уйдёт в расход «Продукты»)</span></label>
+      <button class="primary">Приход</button>
+    </form>
+    <div class="grid2" style="margin-top:14px"><button data-act="wcount">Пересчёт склада</button><button data-act="pcount">Пересчёт на точке</button></div>
+  </section>`;
+
+  const moves = db.stock.filter(s => s.date === d).sort(stockSort);
+  const movesCard = `<section class="card"><h2>Движения за день <span class="badge">${moves.length}</span></h2>
+    ${moves.length ? moves.map(s => { const [a, b] = stockLine(s); return `<button class="item" ${VIEWER ? '' : `data-act="editStock" data-id="${s.id}"`}><span>${esc(a)}</span><span class="num">${esc(b)}</span></button>`; }).join('') : '<p class="sub">Нет записей</p>'}
+  </section>`;
+
+  const month = prods.map(p => ({ p, s: stockMonth(p.id, m) })).filter(x => x.s.income || x.s.total || x.s.pts.some(t => t.issued || t.end));
+  const monthCard = `<section class="card"><h2>Расход за ${fmtMonth(m).toLowerCase()}</h2>
+    ${month.length ? month.map(({ p, s }) => `<div class="item stockm"><span><b>${esc(p.name)}</b><span class="sub">
+        ${s.pts.filter(t => t.issued || t.use || t.end).map(t => `<span class="${t.use < 0 ? 'neg' : ''}">${esc(t.p.name)}: ${qtyStr(t.use)}${t.end ? ' (ост. ' + qtyStr(t.end) + ')' : ''}</span>`).join(' · ')}
+        ${s.off ? ` · <span class="${s.off < 0 ? 'neg' : ''}">списано ${qtyStr(s.off)}</span>` : ''}
+        ${s.income ? `<br>пришло ${qtyStr(s.income)}${s.spent ? ' на ' + money(s.spent) : ''}` : ''}</span></span>
+      <span class="num">${qtyStr(s.total, p.id)}</span></div>`).join('')
+      : '<p class="sub">В этом месяце расхода нет</p>'}
+    <p class="sub" style="margin-top:8px">Расход точки = выдано + остаток на точке на начало − остаток на конец (по пересчётам). Без пересчёта всё выданное считается израсходованным.</p>
+  </section>`;
+
+  const prodCard = VIEWER ? '' : `<details class="card"><summary><span><b>Продукты</b><span class="sub">Название, единица, «мало» — порог для предупреждения</span></span><span class="badge">${db.products.length}</span></summary>
+    ${sortedProducts(true).map(p => `<button class="item" data-act="editProduct" data-id="${p.id}"><span>${esc(p.name)}${p.archived ? ' <span class="badge warn">скрыт</span>' : ''}</span><span class="sub">${esc(p.unit)}${num(p.minQty) ? ' · мало ≤ ' + qtyStr(p.minQty) : ''}</span></button>`).join('')}
+    <button class="primary wide" style="margin-top:10px" data-act="addProduct">+ Добавить продукт</button></details>`;
+
+  return restCard + forms + movesCard + monthCard + prodCard;
+}
+
+function productSheet(p) {
+  const isNew = !p; p = p || { unit: 'кг' };
+  const used = !isNew && db.stock.some(s => s.productId === p.id);
+  openSheet({
+    title: isNew ? 'Новый продукт' : 'Продукт',
+    fields: [
+      { name: 'name', label: 'Название', value: p.name, placeholder: 'Мясо' },
+      { name: 'unit', label: 'Единица', value: p.unit, placeholder: 'кг, шт, л' },
+      { name: 'minQty', label: 'Предупреждать, когда на складе осталось не больше (необязательно)', type: 'number', value: p.minQty },
+      ...(isNew ? [] : [{ name: 'archived', label: 'Скрыть (больше не используется)', type: 'check', value: p.archived }]),
+      ...(used ? [{ type: 'note', label: 'По продукту есть записи, поэтому его нельзя удалить — можно скрыть.' }] : []),
+    ],
+    onSave: v => {
+      if (!v.name) { toast('Введите название'); return false; }
+      Object.assign(p, { name: v.name, unit: v.unit || 'шт', minQty: num(v.minQty), archived: !!v.archived });
+      if (isNew) { p.id = uid(); db.products.push(p); }
+      stamp(p); toast('Сохранено');
+    },
+    onDelete: isNew || used ? null : () => removeRec('products', p),
+    deleteConfirm: 'Удалить продукт?',
+  });
+}
+
+// Приход, оплаченный из налички, создаёт связанную запись расхода в «Наличке»
+function productsCat() {
+  let c = db.cats.find(x => x.name.trim().toLowerCase() === 'продукты');
+  if (!c) { c = stamp({ id: uid(), name: 'Продукты' }); db.cats.push(c); }
+  return c.id;
+}
+function syncStockCash(s) {
+  let c = s.cashId && db.cash.find(x => x.id === s.cashId);
+  const need = s.kind === 'in' && s.fromCash && num(s.amount) > 0;
+  if (!need) { if (c) removeRec('cash', c); s.cashId = ''; return; }
+  const note = 'Склад: ' + prodName(s.productId) + ' ' + qtyStr(s.qty, s.productId);
+  if (!c) { c = { id: uid(), pointId: '', cash: 0, added: 0, stockId: s.id }; db.cash.push(c); s.cashId = c.id; }
+  Object.assign(c, { date: s.date, expense: num(s.amount), note, catId: c.catId || productsCat() }); stamp(c);
+}
+
+function stockSheet(s) {
+  const prods = sortedProducts(true).map(p => ({ v: p.id, t: p.name + ' (' + p.unit + ')' }));
+  const pts = sortedPoints().map(p => ({ v: p.id, t: p.name }));
+  const titles = { in: 'Приход на склад', out: 'Выдача на точку', wcount: 'Пересчёт склада', pcount: 'Пересчёт на точке' };
+  openSheet({
+    title: titles[s.kind],
+    fields: [
+      ...(s.kind === 'out' || s.kind === 'pcount' ? [{ name: 'pointId', label: 'Точка', type: 'select', options: pts, value: s.pointId }] : []),
+      { name: 'productId', label: 'Продукт', type: 'select', options: prods, value: s.productId },
+      { name: 'qty', label: s.kind === 'wcount' ? 'Фактически на складе' : s.kind === 'pcount' ? 'Осталось на точке' : 'Количество', type: 'number', value: s.qty },
+      ...(s.kind === 'in' ? [
+        { name: 'amount', label: 'Сумма', type: 'number', value: s.amount },
+        { name: 'fromCash', label: 'Оплачено из налички', type: 'check', value: s.fromCash },
+      ] : []),
+      { name: 'date', label: 'Дата', type: 'date', value: s.date },
+    ],
+    onSave: v => {
+      if (num(v.qty) < 0 || (s.kind !== 'wcount' && s.kind !== 'pcount' && num(v.qty) <= 0)) { toast('Введите количество'); return false; }
+      Object.assign(s, { productId: v.productId, qty: num(v.qty), date: v.date || s.date });
+      if (v.pointId !== undefined) s.pointId = v.pointId;
+      if (s.kind === 'in') Object.assign(s, { amount: num(v.amount), fromCash: !!v.fromCash });
+      stamp(s); syncStockCash(s);
+    },
+    onDelete: () => { const c = s.cashId && db.cash.find(x => x.id === s.cashId); if (c) removeRec('cash', c); removeRec('stock', s); },
+  });
+}
+
+// Пересчёт сразу по всем продуктам: склад (предзаполнен остатком) или точка
+function countSheet(kind) {
+  const prods = sortedProducts(), d = ui.date;
+  const fields = [];
+  if (kind === 'pcount') fields.push({ name: 'pointId', label: 'Точка', type: 'select', options: sortedPoints().map(p => ({ v: p.id, t: p.name })), value: ui.stockPoint });
+  fields.push({ type: 'note', label: kind === 'wcount'
+    ? 'Введите, сколько фактически лежит на складе. Разница с учётом запишется как списание.'
+    : 'Введите, сколько осталось на точке. Заполните только то, что пересчитали.' });
+  prods.forEach(p => fields.push({ name: 'q_' + p.id, label: p.name + ' (' + p.unit + ')', type: 'number',
+    value: kind === 'wcount' ? Math.round(whLedger(p.id, d).rest * 1000) / 1000 : '' }));
+  openSheet({
+    title: (kind === 'wcount' ? 'Пересчёт склада · ' : 'Пересчёт на точке · ') + fmtShort(d),
+    fields,
+    saveLabel: 'Сохранить пересчёт',
+    onSave: v => {
+      let n = 0;
+      prods.forEach(p => {
+        const raw = v['q_' + p.id]; if (raw === '' || raw == null) return;
+        const q = num(raw);
+        if (kind === 'wcount' && Math.abs(q - whLedger(p.id, d).rest) < 0.0005) return;
+        db.stock.push(stamp({ id: uid(), createdAt: Date.now(), date: d, kind, productId: p.id, qty: q, pointId: kind === 'pcount' ? v.pointId : '' }));
+        n++;
+      });
+      if (kind === 'pcount') ui.stockPoint = v.pointId;
+      toast(n ? 'Записано: ' + n : 'Изменений нет');
+    },
+  });
 }
 
 /* ---------- Зарплата ---------- */
@@ -499,6 +704,7 @@ function viewMore() {
     ${pts.length ? '<button class="primary wide" style="margin-top:10px" data-act="addEmp">+ Добавить сотрудника</button>' : ''}
   </section>
 
+  ${catsCard()}
   ${xlsCard()}
   <section class="card"><h2>Резервная копия</h2>
     <p class="sub">${syncState.user ? 'Данные хранятся в облаке, но копия на всякий случай не помешает.' : 'Данные хранятся только на этом телефоне. Делайте копию раз в неделю и отправляйте её себе, например в Telegram или на Диск.'}</p>
@@ -526,6 +732,51 @@ function viewMore() {
   </section>`;
 }
 
+/* ---------- Категории расходов ---------- */
+// Расходы налички за месяц по категориям (+ авансы и зарплата отдельными строками)
+function catTotals(m) {
+  const by = {};
+  db.cash.filter(c => c.date.startsWith(m) && num(c.expense)).forEach(c => { const k = catName(c.catId) || 'Без категории'; by[k] = (by[k] || 0) + num(c.expense); });
+  return Object.entries(by).sort((a, b) => b[1] - a[1]);
+}
+function catSummary(m) {
+  const list = catTotals(m);
+  if (!list.length) return '';
+  const total = list.reduce((a, x) => a + x[1], 0);
+  return `<section class="card"><h2>Расходы по категориям</h2>
+    ${list.map(([k, v]) => `<div class="item"><span>${esc(k)}<span class="sub">${Math.round(v / total * 100)}%</span></span><span class="num">${money(v)}</span></div>`).join('')}
+    <div class="total">Всего расходов: <b>${money(total)}</b></div></section>`;
+}
+const catName = id => (id && db.cats.find(c => c.id === id)?.name) || '';
+const catOpts = cur => [{ v: '', t: 'Без категории' }, ...db.cats.filter(c => !c.archived || c.id === cur).sort(byName).map(c => ({ v: c.id, t: c.name }))];
+function catsCard() {
+  const list = [...db.cats].sort(byName);
+  return `<section class="card"><h2>Категории расходов</h2>
+    ${list.map(c => `<button class="item" data-act="editCat" data-id="${c.id}"><span>${esc(c.name)}${c.archived ? ' <span class="badge warn">скрыта</span>' : ''}</span><span class="sub">${db.cash.filter(x => x.catId === c.id).length} зап.</span></button>`).join('')
+      || '<p class="sub">Например: Аренда, Продукты, Хозтовары, Ремонт</p>'}
+    <button class="primary wide" style="margin-top:10px" data-act="addCat">+ Добавить категорию</button></section>`;
+}
+function catSheet(c) {
+  const isNew = !c; c = c || {};
+  const used = !isNew && db.cash.some(x => x.catId === c.id);
+  openSheet({
+    title: isNew ? 'Новая категория' : 'Категория',
+    fields: [
+      { name: 'name', label: 'Название', value: c.name, placeholder: 'Аренда' },
+      ...(isNew ? [] : [{ name: 'archived', label: 'Скрыть из списка (старые записи останутся)', type: 'check', value: c.archived }]),
+      ...(used ? [{ type: 'note', label: 'В категории есть записи, поэтому её нельзя удалить — можно скрыть.' }] : []),
+    ],
+    onSave: v => {
+      if (!v.name) { toast('Введите название'); return false; }
+      Object.assign(c, { name: v.name, archived: !!v.archived });
+      if (isNew) { c.id = uid(); db.cats.push(c); }
+      stamp(c); toast('Сохранено');
+    },
+    onDelete: isNew || used ? null : () => removeRec('cats', c),
+    deleteConfirm: 'Удалить категорию?',
+  });
+}
+
 function xlsCard() {
   return `<section class="card"><h2>Выгрузка в Excel</h2>
     <p class="sub" style="margin-bottom:10px">Файл за месяц: касса по точкам с итогами, питание, авансы, наличка, зарплата.</p>
@@ -543,6 +794,9 @@ function trashLabel(t) {
     case 'registers': return ['Касса · ' + pointName(r.pointId), when.slice(3), money(num(r.register)) + ' / ' + money(num(r.check))];
     case 'employees': return ['Сотрудник · ' + (r.name || ''), r.position || '', money(r.salary)];
     case 'points': return ['Точка · ' + (r.name || ''), '', ''];
+    case 'products': return ['Продукт · ' + (r.name || ''), r.unit || '', ''];
+    case 'cats': return ['Категория · ' + (r.name || ''), '', ''];
+    case 'stock': { const [a, b] = stockLine(r); return [a, when.slice(3), b]; }
     default: return [t.col, '', ''];
   }
 }
@@ -820,7 +1074,7 @@ function pointSheet(p) {
   const isNew = !p;
   p = p || {};
   const used = !isNew && (db.employees.some(e => e.pointId === p.id) || db.registers.some(r => r.pointId === p.id) ||
-    db.food.some(f => f.pointId === p.id) || db.advances.some(a => a.pointId === p.id) || db.cash.some(c => c.pointId === p.id));
+    db.food.some(f => f.pointId === p.id) || db.advances.some(a => a.pointId === p.id) || db.cash.some(c => c.pointId === p.id) || db.stock.some(s => s.pointId === p.id));
   openSheet({
     title: isNew ? 'Новая точка' : 'Точка',
     fields: [
@@ -856,13 +1110,15 @@ const actions = {
         { name: 'cash', label: 'Наличные', type: 'number', value: c.cash },
         { name: 'added', label: 'Добавлено', type: 'number', value: c.added },
         { name: 'expense', label: 'Расход', type: 'number', value: c.expense },
+        { name: 'catId', label: 'Категория', type: 'select', options: catOpts(c.catId), value: c.catId || '' },
         { name: 'note', label: 'Комментарий', value: c.note },
+        ...(c.stockId ? [{ type: 'note', label: 'Эта запись создана приходом на склад — сумму лучше менять там (вкладка «Склад»).' }] : []),
         { name: 'date', label: 'Дата', type: 'date', value: c.date },
         { type: 'html', html: `<div class="fld"><span>Фото чека</span><div id="sheetPhotos">${photoGrid(cashPhotos(c.id)) || '<p class="sub">Нет фото</p>'}</div>
           <label class="filebtn photobtn">📷 Добавить фото<input type="file" accept="image/*" multiple data-change="cashPhotos" data-id="${c.id}"></label></div>` },
       ],
       onSave: v => {
-        Object.assign(c, { cash: num(v.cash), added: num(v.added), expense: num(v.expense), note: v.note, date: v.date || c.date }); stamp(c);
+        Object.assign(c, { cash: num(v.cash), added: num(v.added), expense: num(v.expense), note: v.note, catId: v.catId || '', date: v.date || c.date }); stamp(c);
         cashPhotos(c.id).forEach(p => { if (p.date !== c.date) { p.date = c.date; stamp(p); } });
       },
       onDelete: () => { cashPhotos(c.id).forEach(removePhoto); removeRec('cash', c); },
@@ -876,6 +1132,13 @@ const actions = {
     save(); render(); toast('Возвращено');
   },
   exportPhotos: () => exportDb(true),
+  addProduct: () => productSheet(null),
+  editProduct: t => productSheet(prod(t.dataset.id)),
+  editStock: t => { const s = db.stock.find(x => x.id === t.dataset.id); if (s) stockSheet(s); },
+  wcount: () => countSheet('wcount'),
+  pcount: () => countSheet('pcount'),
+  addCat: () => catSheet(null),
+  editCat: t => catSheet(db.cats.find(c => c.id === t.dataset.id)),
   exportXlsx: t => exportXlsx(t.dataset.month || ($('#xlsMonth') && $('#xlsMonth').value) || ui.month),
   paySheet: t => {
     const e = emp(t.dataset.id); if (!e) return;
@@ -930,7 +1193,7 @@ const actions = {
   },
 };
 // Действия, которые меняют данные — у начальника недоступны
-const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos']);
+const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos', 'addProduct', 'editProduct', 'editStock', 'wcount', 'pcount', 'addCat', 'editCat']);
 
 const changes = {
   point: t => { ui.pointId = t.value; saveUi(); render(); },
@@ -968,7 +1231,25 @@ const changes = {
 };
 let pendingCashFiles = [];
 
+function stockForm(f, kind) {
+  const pid = f.elements.prod.value, q = num(f.elements.qty.value);
+  if (!pid) { toast('Сначала добавьте продукт'); return; }
+  if (q <= 0) { toast('Введите количество'); f.elements.qty.focus(); return; }
+  const s = { id: uid(), createdAt: Date.now(), date: ui.date, kind, productId: pid, qty: q, pointId: '' };
+  if (kind === 'out') { s.pointId = f.elements.point.value; ui.stockPoint = s.pointId; }
+  else { s.amount = num(f.elements.amount.value); s.fromCash = f.elements.fromCash.checked; }
+  ui.stockProd = pid;
+  db.stock.push(stamp(s));
+  if (kind === 'in') syncStockCash(s);
+  const rest = whLedger(pid, ui.date).rest;
+  save(); render();
+  toast((kind === 'out' ? 'Выдано ' : 'Приход ') + qtyStr(q, pid) + ' · на складе ' + qtyStr(rest, pid));
+  const inp = document.querySelector(`[data-form="${kind === 'out' ? 'stockOut' : 'stockIn'}"] [name=qty]`); if (inp) inp.focus();
+}
+
 const forms = {
+  stockOut: f => stockForm(f, 'out'),
+  stockIn: f => stockForm(f, 'in'),
   login: f => {
     if (!window.Sync) { toast('Облако ещё загружается, попробуйте через секунду'); return; }
     const btn = f.querySelector('button'); btn.disabled = true; btn.textContent = 'Входим…';
@@ -981,7 +1262,7 @@ const forms = {
     const v = k => num(f.elements[k].value);
     const files = pendingCashFiles; pendingCashFiles = [];
     if (!v('cash') && !v('added') && !v('expense') && !files.length) { toast('Введите хотя бы одну сумму'); return; }
-    const c = stamp({ id: uid(), date: ui.date, pointId: '', cash: v('cash'), added: v('added'), expense: v('expense'), note: f.elements.note.value.trim() });
+    const c = stamp({ id: uid(), date: ui.date, pointId: '', cash: v('cash'), added: v('added'), expense: v('expense'), note: f.elements.note.value.trim(), catId: f.elements.cat.value });
     db.cash.push(c);
     save(); render(); toast('Добавлено');
     if (files.length) addPhotos(files, { date: c.date, pointId: c.pointId, cashId: c.id });
@@ -1173,7 +1454,7 @@ function monthSheets(m) {
   t.dates.filter(d => d.startsWith(m)).forEach(d => {
     const x = t.days[d];
     x.entries.forEach(c => { bal += num(c.cash) + num(c.added) - num(c.expense); tot[0] += num(c.cash); tot[1] += num(c.added); tot[2] += num(c.expense);
-      cash.rows.push([D(d), num(c.cash) || '', num(c.added) || '', num(c.expense) || '', '', '', c.note || '', bal]); });
+      cash.rows.push([D(d), num(c.cash) || '', num(c.added) || '', num(c.expense) || '', '', '', [catName(c.catId), c.note].filter(Boolean).join(': '), bal]); });
     x.advs.forEach(a => { bal -= num(a.amount); tot[3] += num(a.amount);
       cash.rows.push([D(d), '', '', '', num(a.amount), '', 'Аванс: ' + empName(a.employeeId) + ' (' + pointName(a.pointId) + ')', bal]); });
     x.pays.forEach(p => { bal -= p.amount; tot[4] += p.amount;
@@ -1202,7 +1483,29 @@ function monthSheets(m) {
     Object.entries(bp).forEach(([p, v]) => pay.rows.push([pointName(p), BOSS_NAME, 'в зарплату не входит', '', '', '', v]));
   }
 
-  return [kassa, list('Питание', db.food, 'Кто'), list('Авансы', db.advances, 'Сотрудник'), cash, pay];
+  // Расходы по категориям
+  const cats = { name: 'Расходы по категориям', cols: [26, 14, 8], bold: new Set(), rows: [['Категория', 'Сумма', '%']] };
+  const ct = catTotals(m), ctSum = ct.reduce((a, x) => a + x[1], 0);
+  ct.forEach(([k, v]) => cats.rows.push([k, v, ctSum ? Math.round(v / ctSum * 100) : 0]));
+  cats.bold.add(cats.rows.length); cats.rows.push(['Итого', ctSum]);
+
+  // Склад: остатки и расход по точкам
+  const pts = sortedPoints();
+  const stock = { name: 'Склад', cols: [20, 7, 12, 11, 12, ...pts.map(() => 14), 11, 14, 12], bold: new Set(),
+    rows: [['Продукт', 'Ед.', 'На начало', 'Пришло', 'Сумма', ...pts.map(p => 'Расход: ' + p.name), 'Списано', 'Расход всего', 'На конец']] };
+  sortedProducts(true).forEach(p => {
+    const s = stockMonth(p.id, m);
+    if (!s.start && !s.income && !s.total && !s.end) return;
+    stock.rows.push([p.name, p.unit, s.start, s.income, s.spent || '', ...s.pts.map(t => t.use), s.off || '', s.total, s.end]);
+  });
+  const moves = { name: 'Движения склада', cols: [12, 18, 20, 10, 7, 20, 12], bold: new Set(),
+    rows: [['Дата', 'Операция', 'Продукт', 'Кол-во', 'Ед.', 'Точка', 'Сумма']] };
+  const kindName = { in: 'Приход', out: 'Выдача', wcount: 'Пересчёт склада', pcount: 'Пересчёт на точке' };
+  db.stock.filter(inM).sort(stockSort).forEach(s => moves.rows.push([D(s.date), kindName[s.kind], prodName(s.productId), num(s.qty), unitOf(s.productId), s.pointId ? pointName(s.pointId) : '', num(s.amount) || '']));
+
+  const out = [kassa, list('Питание', db.food, 'Кто'), list('Авансы', db.advances, 'Сотрудник'), cash, cats, pay];
+  if (db.products.length) out.push(stock, moves);
+  return out;
 }
 function exportXlsx(m) {
   try { shareFile(XL.book(monthSheets(m)), 'kassa-' + m + '.xlsx'); }
