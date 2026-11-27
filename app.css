@@ -152,3 +152,11 @@ nav button{font-size:11px}
 .down{color:var(--bad);font-weight:700}
 .rt{text-align:right}
 .rt small{display:block;font-size:12px;font-weight:400}
+.missing{display:block;margin:0;padding:12px 14px}
+.missing .mrow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-top:1px solid rgba(0,0,0,.08)}
+.missing .mrow:first-of-type{margin-top:6px}
+.missing .mrow button{min-height:34px;padding:0 10px;font-size:13px;margin-left:6px;background:var(--card);color:var(--text)}
+.pdetail summary{cursor:pointer;color:var(--accent);font-size:14px;margin:4px 0;list-style:none}
+.pdetail summary::-webkit-details-marker{display:none}
+.pdetail summary::before{content:'▸ '}
+.pdetail[open] summary::before{content:'▾ '}

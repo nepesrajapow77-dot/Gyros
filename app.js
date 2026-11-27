@@ -310,7 +310,7 @@ function viewDay() {
   const val = v => v === '' || v == null ? '' : v;
   const t = cashTimeline();
 
-  return `${backupBanner()}
+  return `${backupBanner()}${missingBanner()}${reg && reg.closed ? '<p class="status muted">Отмечено как выходной. Внесите кассу, если точка работала.</p>' : ''}
   <section class="card"><h2>Касса</h2>
     ${VIEWER ? `<div class="stats">
       <div class="stat"><small>Счёт кассы</small><b>${money(num(reg?.register))}</b></div>
@@ -418,18 +418,21 @@ const shortMonth = m => MON_SHORT[+m.slice(5) - 1] + (m.slice(0, 4) !== today().
 const SERIES = n => `var(--s${(n % 8) + 1})`; // цвет кафе — по его месту в списке точек, всегда один и тот же
 const rev = (pid, from, to) => db.registers.filter(r => r.date >= from && r.date <= to && (!pid || r.pointId === pid)).reduce((a, r) => a + num(r.register), 0);
 function niceMax(v) { if (v <= 0) return 1; const p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p; return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p; }
-const kfmt = v => v >= 1e6 ? (Math.round(v / 1e5) / 10).toLocaleString('ru-RU') + ' млн' : v >= 1e3 ? (Math.round(v / 100) / 10).toLocaleString('ru-RU') + ' т' : String(Math.round(v));
+const kfmt = v => v < 0 ? '−' + kfmt(-v) : v >= 1e6 ? (Math.round(v / 1e5) / 10).toLocaleString('ru-RU') + ' млн' : v >= 1e3 ? (Math.round(v / 100) / 10).toLocaleString('ru-RU') + ' т' : String(Math.round(v));
 
 // Графики: SVG без библиотек; подсказка по касанию/наведению
 let charts = {}, chartSeq = 0;
-function barPath(x, y, w, h) {
+// Столбик: скруглён край с данными, у нуля — прямой (down — столбик вниз, для минуса)
+function barPath(x, y, w, h, down) {
   const r = Math.min(4, w / 2, h), yb = y + h;
-  return `M${x} ${yb}V${y + r}Q${x} ${y} ${x + r} ${y}H${x + w - r}Q${x + w} ${y} ${x + w} ${y + r}V${yb}Z`;
+  return down
+    ? `M${x} ${y}V${yb - r}Q${x} ${yb} ${x + r} ${yb}H${x + w - r}Q${x + w} ${yb} ${x + w} ${yb - r}V${y}Z`
+    : `M${x} ${yb}V${y + r}Q${x} ${y} ${x + r} ${y}H${x + w - r}Q${x + w} ${y} ${x + w} ${y + r}V${yb}Z`;
 }
 // Шкала: столбики — от нуля; линии — по диапазону данных, чтобы рост был виден
 function yScale(vals, fromZero) {
   const hi0 = Math.max(1, ...vals);
-  let lo = fromZero ? 0 : Math.min(...vals);
+  let lo = fromZero ? Math.min(0, ...vals) : Math.min(...vals);
   if (!fromZero) lo = Math.max(0, lo - ((hi0 - lo) * 0.25 || hi0 * 0.1));
   const step = niceMax((hi0 - lo) / 4 || 1);
   lo = Math.floor(lo / step) * step;
@@ -450,8 +453,13 @@ function chartSvg(kind, labels, series, tips, opt = {}) {
   labels.forEach((l, i) => { if (i % step === 0 || (kind !== 'bar' && i === n - 1)) g += `<text x="${x(i)}" y="${H - 7}" class="cxlab">${esc(l)}</text>`; });
   let marks = '';
   if (kind === 'bar') {
-    const bw = Math.max(2, pw / n - 2);
-    series[0].values.forEach((v, i) => { if (v > 0) { const yy = y(v); marks += `<path d="${barPath(x(i) - bw / 2, yy, bw, T + ph - yy)}" fill="${series[0].color}"/>`; } });
+    const bw = Math.min(28, Math.max(2, pw / n - 2));
+    const y0 = y(0);
+    series[0].values.forEach((v, i) => {
+      if (v > 0) { const yy = y(v); marks += `<path d="${barPath(x(i) - bw / 2, yy, bw, y0 - yy)}" fill="${series[0].color}"/>`; }
+      else if (v < 0) { const yy = y(v); marks += `<path d="${barPath(x(i) - bw / 2, y0, bw, yy - y0, true)}" fill="${series[0].color}"/>`; }
+    });
+    if (sc.lo < 0) g += `<line x1="${L}" x2="${W - R}" y1="${y0}" y2="${y0}" class="cgrid cbase"/>`;
   } else {
     const last = opt.partialLast ? n - 1 : n;
     series.forEach(s => {
@@ -499,6 +507,47 @@ function deltaHtml(a, b) {
   return `<span class="${p > 0 ? 'up' : 'down'}">${p > 0 ? '▲ +' : '▼ −'}${Math.abs(p)}%</span>`;
 }
 
+// Сотрудники, которым начисляется зарплата за месяц (как во вкладке «Зарплата»)
+function payrollEmps(m) {
+  return db.employees.filter(e => db.food.some(f => f.employeeId === e.id && f.date.startsWith(m)) ||
+    db.advances.some(a => a.employeeId === e.id && a.date.startsWith(m)) || (e.paid && e.paid[m]) || (!e.archived && workDays(e, m).days > 0));
+}
+// Прибыль за месяц. В текущем месяце зарплата — пропорционально прошедшим дням.
+function profitMonth(m) {
+  const from = m + '-01', end = monthEnd(m), inM = x => x.date >= from && x.date <= end;
+  const isCur = m === today().slice(0, 7), frac = isCur ? +today().slice(8) / +end.slice(8) : m > today().slice(0, 7) ? 0 : 1;
+  const R = rev('', from, end);
+  const C = db.registers.filter(inM).reduce((a, r) => a + num(r.check), 0);
+  const F = db.food.filter(x => inM(x) && x.employeeId !== BOSS).reduce((a, x) => a + num(x.amount), 0);
+  const S = payrollEmps(m).reduce((a, e) => a + accrued(e, m).amount * frac, 0);
+  const cats = catTotals(m), E = cats.reduce((a, x) => a + x[1], 0);
+  const P = db.stock.filter(s => s.kind === 'in' && !s.fromCash && inM(s)).reduce((a, s) => a + num(s.amount), 0);
+  return { R, C, F, S, E, P, cats, isCur, profit: R - C + F - S - E - P };
+}
+// Дни, за которые касса не внесена (с первого дня, когда по точке есть записи)
+function missingDays(pid, from, to) {
+  const first = db.registers.filter(r => r.pointId === pid).map(r => r.date).sort()[0];
+  if (!first) return [];
+  const out = [];
+  for (let d = from < first ? first : from; d <= to; d = addDays(d, 1)) {
+    const r = getReg(d, pid);
+    if (!r || (!num(r.register) && !r.closed)) out.push(d);
+  }
+  return out;
+}
+function missingBanner() {
+  if (VIEWER) return '';
+  const yest = addDays(today(), -1), from = addDays(today(), -14);
+  const list = [];
+  sortedPoints().forEach(p => missingDays(p.id, from, yest).forEach(d => list.push({ d, p })));
+  if (!list.length) return '';
+  list.sort((a, b) => b.d.localeCompare(a.d));
+  return `<section class="card status warn missing"><b>Не внесена касса (${list.length})</b>
+    ${list.slice(0, 6).map(x => `<div class="mrow"><span>${x.d === yest ? 'Вчера' : fmtDay(x.d)} · ${esc(x.p.name)}</span>
+      <span><button data-act="goDay" data-date="${x.d}" data-point="${x.p.id}">Внести</button><button data-act="markClosed" data-date="${x.d}" data-point="${x.p.id}">Выходной</button></span></div>`).join('')}
+    ${list.length > 6 ? `<p class="sub">и ещё ${list.length - 6}</p>` : ''}</section>`;
+}
+
 function viewReport() {
   if (!db.points.length) return emptyState();
   charts = {};
@@ -542,9 +591,36 @@ function viewReport() {
     return { p, cur, prev, avg: n ? cur / n : 0, best, bestDay: best ? days[dvals.indexOf(best)] : '' };
   });
 
-  return `<section class="card"><h2>Выручка за ${fmtMonth(m).toLowerCase()}</h2>
+  // Пропущенные дни в выбранном месяце (до вчера)
+  const missTo = isCur ? addDays(today(), -1) : monthEnd(m);
+  const miss = pts.map(p => ({ p, n: missingDays(p.id, from, missTo).length })).filter(x => x.n);
+
+  // Прибыль
+  const pr = profitMonth(m);
+  const pRows = [
+    ['Выручка (счёт кассы)', pr.R, ''],
+    ['Питание по чеку', -pr.C, 'еда сотрудников и гостей — денег не пришло'],
+    ['Удержано за питание', pr.F, 'вычтено из зарплаты'],
+    ['Зарплата (начислено)', -pr.S, pr.isCur ? 'за прошедшие дни месяца' : ''],
+    ...pr.cats.map(([k, v]) => ['Расход: ' + k, -v, '']),
+    ...(pr.P ? [['Продукты не из налички', -pr.P, 'приход на склад']] : []),
+  ].filter(r => r[1]);
+  const mProfit = months.map(mm => Math.round(profitMonth(mm).profit));
+  const profitChart = chartSvg('bar', months.map(shortMonth), [{ name: 'Прибыль', color: 'var(--s3)', values: mProfit }],
+    months.map((mm, i) => `<b>${fmtMonth(mm)}</b><br>Прибыль: ${money(mProfit[i])}${partNote(mm)}`));
+
+  return `${miss.length ? `<p class="status warn">Не внесена касса: ${miss.map(x => esc(x.p.name) + ' — ' + x.n + ' дн.').join(', ')}. Выручка и прибыль будут ниже реальных.</p>` : ''}
+    <section class="card"><h2>Выручка за ${fmtMonth(m).toLowerCase()}</h2>
       <div class="hero"><b>${money(total)}</b>${deltaHtml(rev('', from, to), prevSame)}</div>
       <p class="sub">${prevSame ? `сравнение с 1–${pmEnd} ${MONTHS_GEN[+pm.slice(5) - 1]}: ${money(prevSame)}` : ''}${daysWith ? ` · в среднем ${money(total / daysWith)} за день (${daysWith} дн. с данными)` : ''}</p>
+    </section>
+    <section class="card"><h2>Прибыль за ${fmtMonth(m).toLowerCase()}</h2>
+      <div class="hero"><b class="${pr.profit < 0 ? 'neg' : ''}">${money(pr.profit)}</b>${pr.R ? `<span class="muted">${Math.round(pr.profit / pr.R * 100)}% от выручки</span>` : ''}</div>
+      <details class="pdetail"><summary>Как посчитано</summary>
+        ${pRows.map(([k, v, note]) => `<div class="item"><span>${esc(k)}${note ? `<span class="sub">${esc(note)}</span>` : ''}</span><span class="num">${v > 0 ? '+ ' : '− '}${money(Math.abs(v))}</span></div>`).join('')}
+        <div class="item"><span><b>Прибыль</b></span><span class="num"><b>${money(pr.profit)}</b></span></div>
+      </details>
+      ${pr.isCur ? '<p class="sub" style="margin-top:6px">Месяц ещё идёт: аренда и другие расходы могли быть ещё не внесены.</p>' : ''}
     </section>
     <section class="card"><h2>По кафе</h2>
       <div class="ptable">${rows.map(r => `<div class="item"><span><i class="sw" style="background:${color[r.p.id]}"></i>${esc(r.p.name)}
@@ -552,6 +628,7 @@ function viewReport() {
         <span class="num rt">${money(r.cur)}<small>${deltaHtml(rev(r.p.id, from, to), r.prev)}</small></span></div>`).join('')}</div>
     </section>
     <section class="card"><h2>Рост по месяцам — все кафе</h2>${totalChart}${partialHint}</section>
+    <section class="card"><h2>Прибыль по месяцам</h2>${profitChart}${partial ? '<p class="sub" style="margin-top:6px">Последний столбик — текущий месяц, он ещё не закончился.</p>' : ''}</section>
     <section class="card"><h2>Рост по месяцам — каждое кафе</h2>${legend(ptSeries)}${ptChart}${partialHint}</section>
     <section class="card"><h2>По дням · ${fmtMonth(m).toLowerCase()}</h2>${dayChart}
       <p class="sub" style="margin-top:6px">Нажмите на график, чтобы увидеть сумму. Выручка = «Счёт кассы» на вкладке «День».</p></section>`;
@@ -1272,6 +1349,12 @@ const actions = {
     hydratePhotos();
   },
   setDate: t => { ui.date = t.dataset.date; render(); scrollTo(0, 0); },
+  markClosed: t => {
+    const d = t.dataset.date, pid = t.dataset.point;
+    let r = getReg(d, pid);
+    if (!r) { r = { id: uid(), date: d, pointId: pid, register: 0, check: 0 }; db.registers.push(r); }
+    r.closed = true; stamp(r); save(); render(); toast('Отмечено: выходной');
+  },
   restore: t => {
     const tomb = db.deleted.find(x => x.id === t.dataset.id && x.col === t.dataset.col);
     if (!tomb || !restoreRec(tomb)) { toast('Не удалось вернуть'); return; }
@@ -1339,7 +1422,7 @@ const actions = {
   },
 };
 // Действия, которые меняют данные — у начальника недоступны
-const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos', 'addProduct', 'editProduct', 'editStock', 'wcount', 'pcount', 'addCat', 'editCat']);
+const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos', 'addProduct', 'editProduct', 'editStock', 'wcount', 'pcount', 'addCat', 'editCat', 'markClosed']);
 
 const changes = {
   point: t => { ui.pointId = t.value; saveUi(); render(); },
@@ -1453,6 +1536,7 @@ function saveReg(t) {
   let r = getReg(d, pid);
   if (!r) { r = { id: uid(), date: d, pointId: pid, register: '', check: '' }; db.registers.push(r); }
   r[t.dataset.reg] = t.value.trim() === '' ? '' : num(t.value);
+  if (num(r.register)) r.closed = false; // внесли кассу — значит, не выходной
   stamp(r);
   if (r.register === '' && r.check === '') removeRec('registers', r);
   save();
@@ -1649,7 +1733,15 @@ function monthSheets(m) {
   const kindName = { in: 'Приход', out: 'Выдача', wcount: 'Пересчёт склада', pcount: 'Пересчёт на точке' };
   db.stock.filter(inM).sort(stockSort).forEach(s => moves.rows.push([D(s.date), kindName[s.kind], prodName(s.productId), num(s.qty), unitOf(s.productId), s.pointId ? pointName(s.pointId) : '', num(s.amount) || '']));
 
-  const out = [kassa, list('Питание', db.food, 'Кто'), list('Авансы', db.advances, 'Сотрудник'), cash, cats, pay];
+  const pr = profitMonth(m);
+  const profit = { name: 'Прибыль', cols: [34, 14, 40], bold: new Set(), rows: [['Статья', 'Сумма', 'Пояснение']] };
+  profit.rows.push(['Выручка (счёт кассы)', pr.R, ''], ['Питание по чеку', -pr.C, 'еда сотрудников и гостей — денег не пришло'],
+    ['Удержано за питание', pr.F, 'вычтено из зарплаты'], ['Зарплата (начислено)', -pr.S, pr.isCur ? 'за прошедшие дни месяца' : '']);
+  pr.cats.forEach(([k, v]) => profit.rows.push(['Расход: ' + k, -v, '']));
+  if (pr.P) profit.rows.push(['Продукты не из налички', -pr.P, 'приход на склад']);
+  profit.bold.add(profit.rows.length); profit.rows.push(['Прибыль', pr.profit, pr.isCur ? 'месяц ещё не закончился' : '']);
+
+  const out = [kassa, profit, list('Питание', db.food, 'Кто'), list('Авансы', db.advances, 'Сотрудник'), cash, cats, pay];
   if (db.products.length) out.push(stock, moves);
   return out;
 }
