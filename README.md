@@ -40,6 +40,7 @@
 | `registers` | `date`, `pointId`, `register` (счёт кассы), `check` (чек на питание) |
 | `food` | `date`, `pointId`, `employeeId` (`'__boss'` = «Знакомые начальника»), `amount` |
 | `advances` | `date`, `pointId`, `employeeId`, `amount` |
+| `fines` | `date`, `pointId`, `employeeId`, `amount`, `note` (причина) — штраф, вычитается из зарплаты, наличку не меняет, в прибыли уменьшает расход на зарплату |
 | `cash` | `date`, `pointId` (пусто — наличка общая), `cash`, `added`, `expense`, `note` |
 | `photos` | `date`, `pointId`, `cashId` (если фото чека к записи налички) |
 | `cats` | `name`, `archived` — категории расходов налички (`cash.catId`) |
@@ -81,7 +82,7 @@ Firestore: `biz/main/{коллекция}/{id}`, документ = запись
 
 Доступ задают правила Firestore (меняет владелец в консоли Firebase → Firestore → Rules → Publish):
 писать может только почта бухгалтера, читать — бухгалтер и начальник; разрешённые коллекции перечислены списком.
-**Новую коллекцию нужно добавить и в `COLS` в `app.js`, и в список в правилах, иначе запись будет отклонена.** Сейчас в правилах: points, employees, registers, food, advances, cash, photos, photoData, products, stock, cats.
+**Новую коллекцию нужно добавить и в `COLS` в `app.js`, и в список в правилах, иначе запись будет отклонена.** Сейчас в правилах: points, employees, registers, food, advances, cash, photos, photoData, products, stock, cats, fines.
 
 ## Как вносить изменения
 

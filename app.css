@@ -73,7 +73,7 @@ details.card summary::-webkit-details-marker{display:none}
 .topay{text-align:right}
 .topay small{display:block;color:var(--muted);font-size:12px}
 .topay b{font-size:20px;font-variant-numeric:tabular-nums}
-.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:8px;margin-top:10px}
 .hist{margin-top:8px;font-size:14px}
 .hist div{display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line)}
 .group{font-size:13px;color:var(--muted);margin:12px 0 2px;font-weight:600}

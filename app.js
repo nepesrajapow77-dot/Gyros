@@ -2,7 +2,7 @@
 /* ================= Данные ================= */
 const VIEWER = !!window.VIEWER;   // режим начальника: только просмотр
 const KEY = VIEWER ? 'buh.view.v1' : 'buh.v1', UIKEY = VIEWER ? 'buh.view.ui' : 'buh.ui';
-const COLS = ['points', 'employees', 'registers', 'food', 'advances', 'cash', 'photos', 'products', 'stock', 'cats'];
+const COLS = ['points', 'employees', 'registers', 'food', 'advances', 'cash', 'photos', 'products', 'stock', 'cats', 'fines'];
 const BOSS = '__boss', BOSS_NAME = 'Знакомые начальника';
 
 const $ = s => document.querySelector(s);
@@ -28,7 +28,7 @@ const fmtShort = s => s.slice(8, 10) + '.' + s.slice(5, 7);
 const fmtMonth = m => { const [y, mm] = m.split('-').map(Number); return MONTHS[mm - 1] + ' ' + y; };
 
 // deleted — пометки об удалении для синхронизации; sync — что уже отправлено/получено
-function emptyDb() { return { version: 2, points: [], employees: [], registers: [], food: [], advances: [], cash: [], photos: [], products: [], stock: [], cats: [], deleted: [], lastBackup: 0, sync: { lastPush: 0, pull: {} } }; }
+function emptyDb() { return { version: 2, points: [], employees: [], registers: [], food: [], advances: [], cash: [], photos: [], products: [], stock: [], cats: [], fines: [], deleted: [], lastBackup: 0, sync: { lastPush: 0, pull: {} } }; }
 function normalizeDb(d) {
   d = Object.assign(emptyDb(), d);
   if (!d.sync || typeof d.sync !== 'object') d.sync = { lastPush: 0, pull: {} };
@@ -303,6 +303,7 @@ function viewDay() {
   const reg = getReg(d, pid);
   const foods = db.food.filter(f => f.date === d && f.pointId === pid);
   const advs = db.advances.filter(a => a.date === d && a.pointId === pid);
+  const fins = db.fines.filter(x => x.date === d && x.pointId === pid);
   const dayPhotos = db.photos.filter(p => p.date === d && p.pointId === pid && !p.cashId);
   const people = peopleOpts(pid, false);
   const foodPeople = peopleOpts(pid, true);
@@ -338,6 +339,19 @@ function viewDay() {
       <input name="amount" inputmode="decimal" placeholder="Сумма" aria-label="Сумма" autocomplete="off">
       <button class="primary" aria-label="Добавить">+</button>
     </form>` : noPeople}
+  </section>
+
+  <section class="card"><h2>Штраф <span class="num">${money(sum(fins, 'amount'))}</span></h2>
+    ${fins.map(x => `<button class="item" data-act="editFine" data-id="${x.id}"><span>${esc(empName(x.employeeId))}${x.note ? `<span class="sub">${esc(x.note)}</span>` : ''}</span><span class="num">${money(x.amount)}</span></button>`).join('')}
+    ${VIEWER ? (fins.length ? '' : '<p class="sub">Не было</p>') : people.length ? `<form class="stack" data-form="fine" style="margin-top:10px">
+      <div class="quick" style="margin-top:0">
+        <select name="who" aria-label="Кому">${opts(people, people.some(o => o.v === ui.fineWho) ? ui.fineWho : people[0]?.v)}</select>
+        <input name="amount" inputmode="decimal" placeholder="Сумма" aria-label="Сумма" autocomplete="off">
+        <button class="primary" aria-label="Добавить">+</button>
+      </div>
+      <input name="note" placeholder="Причина (опоздание, недостача…)" autocomplete="off">
+    </form>` : noPeople}
+    <p class="sub" style="margin-top:6px">Вычитается из зарплаты. Общую наличку не меняет.</p>
   </section>
 
   <button class="card item linkcard" data-act="tab" data-tab="cash">
@@ -510,7 +524,7 @@ function deltaHtml(a, b) {
 // Сотрудники, которым начисляется зарплата за месяц (как во вкладке «Зарплата»)
 function payrollEmps(m) {
   return db.employees.filter(e => db.food.some(f => f.employeeId === e.id && f.date.startsWith(m)) ||
-    db.advances.some(a => a.employeeId === e.id && a.date.startsWith(m)) || (e.paid && e.paid[m]) || (!e.archived && workDays(e, m).days > 0));
+    db.advances.some(a => a.employeeId === e.id && a.date.startsWith(m)) || db.fines.some(x => x.employeeId === e.id && x.date.startsWith(m)) || (e.paid && e.paid[m]) || (!e.archived && workDays(e, m).days > 0));
 }
 // Прибыль за месяц. В текущем месяце зарплата — пропорционально прошедшим дням.
 function profitMonth(m) {
@@ -519,10 +533,11 @@ function profitMonth(m) {
   const R = rev('', from, end);
   const C = db.registers.filter(inM).reduce((a, r) => a + num(r.check), 0);
   const F = db.food.filter(x => inM(x) && x.employeeId !== BOSS).reduce((a, x) => a + num(x.amount), 0);
+  const N = db.fines.filter(inM).reduce((a, x) => a + num(x.amount), 0);
   const S = payrollEmps(m).reduce((a, e) => a + accrued(e, m).amount * frac, 0);
   const cats = catTotals(m), E = cats.reduce((a, x) => a + x[1], 0);
   const P = db.stock.filter(s => s.kind === 'in' && !s.fromCash && inM(s)).reduce((a, s) => a + num(s.amount), 0);
-  return { R, C, F, S, E, P, cats, isCur, profit: R - C + F - S - E - P };
+  return { R, C, F, N, S, E, P, cats, isCur, profit: R - C + F + N - S - E - P };
 }
 // Дни, за которые касса не внесена (с первого дня, когда по точке есть записи)
 function missingDays(pid, from, to) {
@@ -601,6 +616,7 @@ function viewReport() {
     ['Выручка (счёт кассы)', pr.R, ''],
     ['Питание по чеку', -pr.C, 'еда сотрудников и гостей — денег не пришло'],
     ['Удержано за питание', pr.F, 'вычтено из зарплаты'],
+    ['Удержано штрафов', pr.N, 'вычтено из зарплаты'],
     ['Зарплата (начислено)', -pr.S, pr.isCur ? 'за прошедшие дни месяца' : ''],
     ...pr.cats.map(([k, v]) => ['Расход: ' + k, -v, '']),
     ...(pr.P ? [['Продукты не из налички', -pr.P, 'приход на склад']] : []),
@@ -841,20 +857,20 @@ function viewPay() {
   if (!db.points.length) return emptyState();
   const m = ui.month, pf = ui.payPoint;
   const inM = x => x.date.startsWith(m);
-  const foodM = db.food.filter(inM), advM = db.advances.filter(inM);
-  const hasRecs = e => foodM.some(f => f.employeeId === e.id) || advM.some(a => a.employeeId === e.id) || (e.paid && e.paid[m]);
+  const foodM = db.food.filter(inM), advM = db.advances.filter(inM), fineM = db.fines.filter(inM);
+  const hasRecs = e => foodM.some(f => f.employeeId === e.id) || advM.some(a => a.employeeId === e.id) || fineM.some(x => x.employeeId === e.id) || (e.paid && e.paid[m]);
   const emps = db.employees.filter(e => (pf === 'all' || e.pointId === pf) &&
       (hasRecs(e) || (!e.archived && workDays(e, m).days > 0)))
     .sort((a, b) => pointName(a.pointId).localeCompare(pointName(b.pointId), 'ru') || byName(a, b));
 
-  let tS = 0, tF = 0, tA = 0, tP = 0;
+  let tS = 0, tF = 0, tA = 0, tP = 0, tN = 0;
   let lastPoint = null;
   const cards = emps.map(e => {
-    const fl = foodM.filter(f => f.employeeId === e.id), al = advM.filter(a => a.employeeId === e.id);
-    const ac = accrued(e, m), s = Math.round(ac.amount), f = sum(fl, 'amount'), a = sum(al, 'amount'), pay = s - f - a;
+    const fl = foodM.filter(f => f.employeeId === e.id), al = advM.filter(a => a.employeeId === e.id), nl = fineM.filter(x => x.employeeId === e.id);
+    const ac = accrued(e, m), s = Math.round(ac.amount), f = sum(fl, 'amount'), a = sum(al, 'amount'), fn = sum(nl, 'amount'), pay = s - f - a - fn;
     const paid = e.paid && e.paid[m];
-    tS += s; tF += f; tA += a; if (paid) tP += num(paid.amount);
-    const hist = [...fl.map(x => ({ d: x.date, t: 'Питание', v: x.amount })), ...al.map(x => ({ d: x.date, t: 'Аванс', v: x.amount }))]
+    tS += s; tF += f; tA += a; tN += fn; if (paid) tP += num(paid.amount);
+    const hist = [...fl.map(x => ({ d: x.date, t: 'Питание', v: x.amount })), ...al.map(x => ({ d: x.date, t: 'Аванс', v: x.amount })), ...nl.map(x => ({ d: x.date, t: 'Штраф' + (x.note ? ': ' + x.note : ''), v: x.amount }))]
       .sort((p, q) => p.d.localeCompare(q.d));
     const head = pf === 'all' && lastPoint !== e.pointId ? `<div class="group">${esc(pointName(e.pointId))}</div>` : '';
     lastPoint = e.pointId;
@@ -865,6 +881,7 @@ function viewPay() {
         <div class="stat"><small>Зарплата</small><b>${money(s)}</b></div>
         <div class="stat"><small>Питание</small><b>${money(f)}</b></div>
         <div class="stat"><small>Аванс</small><b>${money(a)}</b></div>
+        ${fn ? `<div class="stat"><small>Штраф</small><b>${money(fn)}</b></div>` : ""}
       </div>
       ${ac.days < ac.dim ? `<p class="sub" style="margin-top:6px">Отработано ${ac.days} из ${ac.dim} дн. · оклад ${money(ac.full)}</p>` : ''}
       ${paid ? `<p class="status ok">Выдано ${money(paid.amount)} · ${fmtShort(paid.date)}${paid.fromCash ? ' · из налички' : ''}${Math.round(num(paid.amount)) !== pay ? ` · по расчёту ${money(pay)}` : ''}</p>` : ''}
@@ -885,7 +902,8 @@ function viewPay() {
       <div class="stat"><small>Зарплаты</small><b>${money(tS)}</b></div>
       <div class="stat"><small>Питание</small><b>${money(tF)}</b></div>
       <div class="stat"><small>Аванс</small><b>${money(tA)}</b></div>
-      <div class="stat"><small>Всего к выдаче</small><b>${money(tS - tF - tA)}</b></div>
+      ${tN ? `<div class="stat"><small>Штрафы</small><b>${money(tN)}</b></div>` : ""}
+      <div class="stat"><small>Всего к выдаче</small><b>${money(tS - tF - tA - tN)}</b></div>
       <div class="stat"><small>Уже выдано</small><b>${money(tP)}</b></div>
       <div class="stat"><small>Выдано сотрудникам</small><b>${emps.filter(e => e.paid && e.paid[m]).length} из ${emps.length}</b></div>
     </div>
@@ -1012,6 +1030,7 @@ function trashLabel(t) {
   switch (t.col) {
     case 'food': return ['Питание · ' + empName(r.employeeId), pointName(r.pointId) + when, money(r.amount)];
     case 'advances': return ['Аванс · ' + empName(r.employeeId), pointName(r.pointId) + when, money(r.amount)];
+    case 'fines': return ['Штраф · ' + empName(r.employeeId), (r.note ? r.note + ' · ' : '') + pointName(r.pointId) + when, money(r.amount)];
     case 'cash': return ['Наличка · ' + (r.note || 'запись'), when.slice(3), cashLine(r)];
     case 'photos': return ['Фото', (r.cashId ? 'чек налички' : pointName(r.pointId)) + when, ''];
     case 'registers': return ['Касса · ' + pointName(r.pointId), when.slice(3), money(num(r.register)) + ' / ' + money(num(r.check))];
@@ -1251,7 +1270,7 @@ function amountSheet(kind, rec) {
 function empSheet(e) {
   const isNew = !e;
   e = e || { pointId: ui.pointId || sortedPoints()[0]?.id };
-  const used = !isNew && (db.food.some(f => f.employeeId === e.id) || db.advances.some(a => a.employeeId === e.id));
+  const used = !isNew && (db.food.some(f => f.employeeId === e.id) || db.advances.some(a => a.employeeId === e.id) || db.fines.some(x => x.employeeId === e.id));
   openSheet({
     title: isNew ? 'Новый сотрудник' : 'Сотрудник',
     fields: [
@@ -1325,6 +1344,7 @@ const actions = {
   closeSheet: () => closeSheet(),
   editFood: t => { const r = db.food.find(x => x.id === t.dataset.id); if (r) amountSheet('food', r); },
   editAdv: t => { const r = db.advances.find(x => x.id === t.dataset.id); if (r) amountSheet('adv', r); },
+  editFine: t => { const r = db.fines.find(x => x.id === t.dataset.id); if (r) fineSheet(r); },
   editCash: t => {
     const c = db.cash.find(x => x.id === t.dataset.id); if (!c) return;
     openSheet({
@@ -1372,7 +1392,7 @@ const actions = {
   paySheet: t => {
     const e = emp(t.dataset.id); if (!e) return;
     const m = ui.month, cur = e.paid && e.paid[m], inM = x => x.date.startsWith(m) && x.employeeId === e.id;
-    const calc = Math.round(accrued(e, m).amount) - sum(db.food.filter(inM), 'amount') - sum(db.advances.filter(inM), 'amount');
+    const calc = Math.round(accrued(e, m).amount) - sum(db.food.filter(inM), 'amount') - sum(db.advances.filter(inM), 'amount') - sum(db.fines.filter(inM), 'amount');
     const defDate = today().startsWith(m) ? today() : (today() > m ? addDays(addMonths(m, 1) + '-01', -1) : m + '-01');
     openSheet({
       title: 'Выдача · ' + e.name + ' · ' + fmtMonth(m).toLowerCase(),
@@ -1422,7 +1442,7 @@ const actions = {
   },
 };
 // Действия, которые меняют данные — у начальника недоступны
-const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos', 'addProduct', 'editProduct', 'editStock', 'wcount', 'pcount', 'addCat', 'editCat', 'markClosed']);
+const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos', 'addProduct', 'editProduct', 'editStock', 'wcount', 'pcount', 'addCat', 'editCat', 'markClosed', 'editFine']);
 
 const changes = {
   point: t => { ui.pointId = t.value; saveUi(); render(); },
@@ -1487,6 +1507,7 @@ const forms = {
   },
   food: f => addAmount(f, 'food'),
   adv: f => addAmount(f, 'adv'),
+  fine: f => addFine(f),
   cash: f => {
     const v = k => num(f.elements[k].value);
     const files = pendingCashFiles; pendingCashFiles = [];
@@ -1497,6 +1518,31 @@ const forms = {
     if (files.length) addPhotos(files, { date: c.date, pointId: c.pointId, cashId: c.id });
   },
 };
+
+function addFine(f) {
+  const who = f.elements.who.value, amount = num(f.elements.amount.value), note = f.elements.note.value.trim();
+  if (!who) { toast('Добавьте сотрудников во вкладке «Ещё»'); return; }
+  if (amount <= 0) { toast('Введите сумму'); f.elements.amount.focus(); return; }
+  db.fines.push(stamp({ id: uid(), date: ui.date, pointId: ui.pointId, employeeId: who, amount, note }));
+  ui.fineWho = who;
+  save(); render(); toast('Штраф: ' + empName(who) + ' ' + money(amount));
+}
+function fineSheet(r) {
+  openSheet({
+    title: 'Штраф',
+    fields: [
+      { name: 'who', label: 'Кому', type: 'select', options: peopleOpts(r.pointId, false, r.employeeId), value: r.employeeId },
+      { name: 'amount', label: 'Сумма', type: 'number', value: r.amount },
+      { name: 'note', label: 'Причина', value: r.note },
+      { name: 'date', label: 'Дата', type: 'date', value: r.date },
+    ],
+    onSave: v => {
+      if (num(v.amount) <= 0) { toast('Введите сумму'); return false; }
+      Object.assign(r, { employeeId: v.who, amount: num(v.amount), note: v.note, date: v.date || r.date }); stamp(r);
+    },
+    onDelete: () => removeRec('fines', r),
+  });
+}
 
 function addAmount(f, kind) {
   const who = f.elements.who.value, amount = num(f.elements.amount.value);
@@ -1693,19 +1739,19 @@ function monthSheets(m) {
   cash.bold.add(cash.rows.length); cash.rows.push(['Итого', ...tot, 'Остаток на конец месяца', bal]);
 
   // Зарплата
-  const foodM = db.food.filter(inM), advM = db.advances.filter(inM);
-  const pay = { name: 'Зарплата', cols: [18, 20, 16, 11, 9, 12, 11, 11, 12, 12, 12], bold: new Set(),
-    rows: [['Точка', 'Сотрудник', 'Должность', 'Оклад', 'Дней', 'Начислено', 'Питание', 'Аванс', 'К выдаче', 'Выдано', 'Дата выдачи']] };
-  const pt = [0, 0, 0, 0, 0];
-  db.employees.filter(e => foodM.some(f => f.employeeId === e.id) || advM.some(a => a.employeeId === e.id) || (e.paid && e.paid[m]) || (!e.archived && workDays(e, m).days > 0))
+  const foodM = db.food.filter(inM), advM = db.advances.filter(inM), fineM = db.fines.filter(inM);
+  const pay = { name: 'Зарплата', cols: [18, 20, 16, 11, 9, 12, 11, 11, 11, 12, 12, 12], bold: new Set(),
+    rows: [['Точка', 'Сотрудник', 'Должность', 'Оклад', 'Дней', 'Начислено', 'Питание', 'Аванс', 'Штраф', 'К выдаче', 'Выдано', 'Дата выдачи']] };
+  const pt = [0, 0, 0, 0, 0, 0];
+  db.employees.filter(e => foodM.some(f => f.employeeId === e.id) || advM.some(a => a.employeeId === e.id) || fineM.some(x => x.employeeId === e.id) || (e.paid && e.paid[m]) || (!e.archived && workDays(e, m).days > 0))
     .sort((a, b) => pointName(a.pointId).localeCompare(pointName(b.pointId), 'ru') || byName(a, b))
     .forEach(e => {
-      const ac = accrued(e, m), s = Math.round(ac.amount), f = sum(foodM.filter(r => r.employeeId === e.id), 'amount'), a = sum(advM.filter(r => r.employeeId === e.id), 'amount');
+      const ac = accrued(e, m), s = Math.round(ac.amount), f = sum(foodM.filter(r => r.employeeId === e.id), 'amount'), a = sum(advM.filter(r => r.employeeId === e.id), 'amount'), fn = sum(fineM.filter(r => r.employeeId === e.id), 'amount');
       const pd = e.paid && e.paid[m];
-      pt[0] += s; pt[1] += f; pt[2] += a; pt[3] += s - f - a; pt[4] += pd ? num(pd.amount) : 0;
-      pay.rows.push([pointName(e.pointId), e.name + (e.archived ? ' (уволен)' : ''), e.position || '', ac.full, ac.days + '/' + ac.dim, s, f, a, s - f - a, pd ? num(pd.amount) : '', pd ? D(pd.date) : '']);
+      pt[0] += s; pt[1] += f; pt[2] += a; pt[3] += fn; pt[4] += s - f - a - fn; pt[5] += pd ? num(pd.amount) : 0;
+      pay.rows.push([pointName(e.pointId), e.name + (e.archived ? ' (уволен)' : ''), e.position || '', ac.full, ac.days + '/' + ac.dim, s, f, a, fn, s - f - a - fn, pd ? num(pd.amount) : '', pd ? D(pd.date) : '']);
     });
-  pay.bold.add(pay.rows.length); pay.rows.push(['Итого', '', '', '', '', pt[0], pt[1], pt[2], pt[3], pt[4]]);
+  pay.bold.add(pay.rows.length); pay.rows.push(['Итого', '', '', '', '', pt[0], pt[1], pt[2], pt[3], pt[4], pt[5]]);
   const boss = foodM.filter(f => f.employeeId === BOSS);
   if (boss.length) {
     pay.rows.push([]);
@@ -1736,12 +1782,18 @@ function monthSheets(m) {
   const pr = profitMonth(m);
   const profit = { name: 'Прибыль', cols: [34, 14, 40], bold: new Set(), rows: [['Статья', 'Сумма', 'Пояснение']] };
   profit.rows.push(['Выручка (счёт кассы)', pr.R, ''], ['Питание по чеку', -pr.C, 'еда сотрудников и гостей — денег не пришло'],
-    ['Удержано за питание', pr.F, 'вычтено из зарплаты'], ['Зарплата (начислено)', -pr.S, pr.isCur ? 'за прошедшие дни месяца' : '']);
+    ['Удержано за питание', pr.F, 'вычтено из зарплаты'], ['Удержано штрафов', pr.N, 'вычтено из зарплаты'], ['Зарплата (начислено)', -pr.S, pr.isCur ? 'за прошедшие дни месяца' : '']);
   pr.cats.forEach(([k, v]) => profit.rows.push(['Расход: ' + k, -v, '']));
   if (pr.P) profit.rows.push(['Продукты не из налички', -pr.P, 'приход на склад']);
   profit.bold.add(profit.rows.length); profit.rows.push(['Прибыль', pr.profit, pr.isCur ? 'месяц ещё не закончился' : '']);
 
-  const out = [kassa, profit, list('Питание', db.food, 'Кто'), list('Авансы', db.advances, 'Сотрудник'), cash, cats, pay];
+  const fineList = () => {
+    const sh = { name: 'Штрафы', cols: [12, 20, 24, 12, 34], bold: new Set(), rows: [['Дата', 'Точка', 'Сотрудник', 'Сумма', 'Причина']] };
+    db.fines.filter(inM).sort(byDP).forEach(r => sh.rows.push([D(r.date), pointName(r.pointId), empName(r.employeeId), num(r.amount), r.note || '']));
+    sh.bold.add(sh.rows.length); sh.rows.push(['Итого', '', '', sum(db.fines.filter(inM), 'amount')]);
+    return sh;
+  };
+  const out = [kassa, profit, list('Питание', db.food, 'Кто'), list('Авансы', db.advances, 'Сотрудник'), fineList(), cash, cats, pay];
   if (db.products.length) out.push(stock, moves);
   return out;
 }
