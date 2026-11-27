@@ -1,7 +1,7 @@
 // Офлайн-кэш: сначала сеть, без сети — сохранённая копия.
 // Кэшируем только файлы приложения и библиотеку Firebase, запросы к облаку не трогаем.
-const CACHE = 'kassa-v6';
-const FILES = ['./', './index.html', './boss.html', './app.css?v=6', './app.js?v=6', './sync.js?v=6', './firebase-config.js?v=6',
+const CACHE = 'kassa-v7';
+const FILES = ['./', './index.html', './boss.html', './app.css?v=7', './app.js?v=7', './sync.js?v=7', './firebase-config.js?v=7',
   './manifest.webmanifest', './boss.webmanifest', './icon.svg', './icon-boss.svg', './icon-180.png', './icon-boss-180.png'];
 
 self.addEventListener('install', e => {

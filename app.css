@@ -124,3 +124,8 @@ button:disabled{opacity:.6}
 .linkcard{border-bottom:0;border-radius:14px;padding:14px;min-height:0}
 .dayhead.item{border-bottom:1px solid var(--line);padding:4px 2px 10px}
 .topay .paidlbl{color:var(--ok);font-weight:600}
+.trashr{display:flex;align-items:center;gap:8px}
+.trashr button{min-height:36px;padding:0 10px;font-size:14px;background:var(--accent-weak)}
+.backupnote{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0;padding:12px 14px}
+.backupnote button{flex:0 0 auto;min-height:40px}
+details.card summary .badge{background:var(--bg)}

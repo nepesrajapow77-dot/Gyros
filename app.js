@@ -50,10 +50,22 @@ function save(fromCloud) {
   if (!fromCloud && !VIEWER && window.Sync) window.Sync.schedulePush();
 }
 // Удаление записи с пометкой, чтобы удаление дошло и до облака
+// Копия записи (rec) хранится 30 дней — из неё работает «Корзина».
 function removeRec(col, rec) {
   db[col] = db[col].filter(x => x !== rec);
-  db.deleted.push({ col, id: rec.id, updatedAt: Date.now() });
+  const snap = Object.assign({}, rec); delete snap.syncedAt;
+  db.deleted.push({ col, id: rec.id, updatedAt: Date.now(), rec: snap });
 }
+// Вернуть запись из корзины (вместе с фото, если это запись налички)
+function restoreRec(t) {
+  if (!t.rec || db[t.col].some(x => x.id === t.id)) return false;
+  db[t.col].push(stamp(Object.assign({}, t.rec)));
+  db.deleted = db.deleted.filter(x => x !== t);
+  if (t.col === 'photos') unDeletePhoto(t.id);
+  if (t.col === 'cash') db.deleted.filter(x => x.col === 'photos' && x.rec && x.rec.cashId === t.id).forEach(restoreRec);
+  return true;
+}
+const MONTH_MS = 30 * 864e5;
 
 // Принять записи из облака: побеждает более свежая правка
 function applyRemote(col, docs) {
@@ -84,7 +96,8 @@ window.App = {
   setSync(s) { Object.assign(syncState, s); safeRender(); },
   resetLocal() { db = emptyDb(); save(true); PDB.clear().catch(() => {}); render(); },
   photoQueue: () => PDB.all().then(a => a.filter(x => !x.synced)),
-  photoSynced: p => p.deleted ? PDB.del(p.id) : PDB.put(Object.assign({}, p, { synced: true })),
+  // Удалённое фото оставляем в телефоне на 30 дней (для корзины), в облаке оно помечено удалённым
+  photoSynced: p => PDB.put(Object.assign({}, p, { synced: true })),
   toast: m => toast(m),
 };
 
@@ -295,7 +308,7 @@ function viewDay() {
   const val = v => v === '' || v == null ? '' : v;
   const t = cashTimeline();
 
-  return `
+  return `${backupBanner()}
   <section class="card"><h2>Касса</h2>
     ${VIEWER ? `<div class="stats">
       <div class="stat"><small>Счёт кассы</small><b>${money(num(reg?.register))}</b></div>
@@ -488,11 +501,15 @@ function viewMore() {
     <p class="sub">${syncState.user ? 'Данные хранятся в облаке, но копия на всякий случай не помешает.' : 'Данные хранятся только на этом телефоне. Делайте копию раз в неделю и отправляйте её себе, например в Telegram или на Диск.'}</p>
     <p class="sub" style="margin:6px 0 10px">Последняя копия: <b>${lb}</b></p>
     <div class="stack">
-      <button class="primary" data-act="export">Сохранить копию</button>
+      <button class="primary" data-act="export">Сохранить копию (без фото)</button>
+      <button data-act="exportPhotos">Сохранить копию с фото</button>
       <label class="filebtn" style="min-height:44px;border-radius:10px;background:var(--line)">Восстановить из копии
         <input type="file" accept=".json,application/json" data-change="importBackup"></label>
     </div>
+    <p class="sub" style="margin-top:8px">Копия без фото маленькая — её удобно делать каждую неделю. Копию с фото делайте раз в месяц.</p>
   </section>
+
+  ${trashCard()}
 
   <section class="card"><h2>Перенос из старого приложения</h2>
     <p class="sub" style="margin-bottom:10px">Выберите сразу все файлы старого приложения: messages.json, employees.json, advance.json, daily_cash.json, cash_book.json.
@@ -504,6 +521,43 @@ function viewMore() {
   <section class="card"><h2>Опасная зона</h2>
     <button class="danger wide" data-act="wipe">Удалить все данные</button>
   </section>`;
+}
+
+// Корзина: всё удалённое за последние 30 дней
+function trashLabel(t) {
+  const r = t.rec || {}, when = r.date ? ' · ' + fmtShort(r.date) : '';
+  switch (t.col) {
+    case 'food': return ['Питание · ' + empName(r.employeeId), pointName(r.pointId) + when, money(r.amount)];
+    case 'advances': return ['Аванс · ' + empName(r.employeeId), pointName(r.pointId) + when, money(r.amount)];
+    case 'cash': return ['Наличка · ' + (r.note || 'запись'), when.slice(3), cashLine(r)];
+    case 'photos': return ['Фото', (r.cashId ? 'чек налички' : pointName(r.pointId)) + when, ''];
+    case 'registers': return ['Касса · ' + pointName(r.pointId), when.slice(3), money(num(r.register)) + ' / ' + money(num(r.check))];
+    case 'employees': return ['Сотрудник · ' + (r.name || ''), r.position || '', money(r.salary)];
+    case 'points': return ['Точка · ' + (r.name || ''), '', ''];
+    default: return [t.col, '', ''];
+  }
+}
+function trashList() {
+  const old = Date.now() - MONTH_MS;
+  return db.deleted.filter(t => t.rec && t.updatedAt > old && !db[t.col].some(x => x.id === t.id) &&
+      !(t.col === 'registers' && !num(t.rec.register) && !num(t.rec.check)) &&
+      !(t.col === 'photos' && t.rec.cashId && db.deleted.some(x => x.col === 'cash' && x.id === t.rec.cashId)))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+function trashCard() {
+  const list = trashList();
+  return `<details class="card"><summary><span><b>Корзина</b><span class="sub">Удалённое за 30 дней можно вернуть</span></span><span class="badge">${list.length}</span></summary>
+    ${list.length ? list.map(t => { const [a, b, c] = trashLabel(t); return `<div class="item"><span>${esc(a)}<span class="sub">${esc(b)} · удалено ${new Date(t.updatedAt).toLocaleDateString('ru-RU')}</span></span>
+      <span class="trashr"><span class="num">${esc(c)}</span><button data-act="restore" data-id="${t.id}" data-col="${t.col}">Вернуть</button></span></div>`; }).join('')
+    : '<p class="sub" style="margin-top:8px">Корзина пуста</p>'}
+  </details>`;
+}
+function backupBanner() {
+  if (VIEWER || !db.points.length) return '';
+  const days = db.lastBackup ? Math.floor((Date.now() - db.lastBackup) / 864e5) : null;
+  if (days !== null && days < 7) return '';
+  return `<section class="card status warn backupnote"><span>${days === null ? 'Резервной копии ещё не было.' : 'Последняя резервная копия — ' + days + ' дн. назад.'}</span>
+    <button class="primary" data-act="export">Сохранить копию</button></section>`;
 }
 
 function cloudCard() {
@@ -613,8 +667,20 @@ async function addPhotos(files, link) {
 }
 function removePhoto(p) {
   removeRec('photos', p);
+  const data = photoUrl[p.id] || null;
   delete photoUrl[p.id];
-  PDB.put({ id: p.id, data: null, deleted: true, synced: false }).catch(() => {});
+  PDB.get(p.id).catch(() => null).then(r => PDB.put({ id: p.id, data: (r && r.data) || data, deleted: true, deletedAt: Date.now(), synced: false })).catch(() => {});
+}
+function unDeletePhoto(id) {
+  PDB.get(id).then(r => { if (r && r.data) return PDB.put({ id, data: r.data, synced: false }); }).catch(() => {});
+}
+// Чистка: удалённые больше 30 дней назад фото и пометки удаления
+function purgeOld() {
+  const old = Date.now() - MONTH_MS;
+  const before = db.deleted.length;
+  db.deleted = db.deleted.filter(t => t.updatedAt > old || (!t.synced && window.FIREBASE_CONFIG));
+  if (db.deleted.length !== before) save(true);
+  PDB.all().then(list => list.forEach(r => { if (r.deleted && r.synced && (r.deletedAt || 0) < old) PDB.del(r.id).catch(() => {}); })).catch(() => {});
 }
 function refreshSheetPhotos(cid) {
   const el = $('#sheetPhotos');
@@ -795,6 +861,12 @@ const actions = {
     hydratePhotos();
   },
   setDate: t => { ui.date = t.dataset.date; render(); scrollTo(0, 0); },
+  restore: t => {
+    const tomb = db.deleted.find(x => x.id === t.dataset.id && x.col === t.dataset.col);
+    if (!tomb || !restoreRec(tomb)) { toast('Не удалось вернуть'); return; }
+    save(); render(); toast('Возвращено');
+  },
+  exportPhotos: () => exportDb(true),
   paySheet: t => {
     const e = emp(t.dataset.id); if (!e) return;
     const m = ui.month, cur = e.paid && e.paid[m], inM = x => x.date.startsWith(m) && x.employeeId === e.id;
@@ -848,7 +920,7 @@ const actions = {
   },
 };
 // Действия, которые меняют данные — у начальника недоступны
-const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet']);
+const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos']);
 
 const changes = {
   point: t => { ui.pointId = t.value; saveUi(); render(); },
@@ -862,6 +934,11 @@ const changes = {
     if (!data || !Array.isArray(data.points)) { toast('Это не резервная копия'); return; }
     if (!confirm('Заменить все данные на этом телефоне данными из копии?')) return;
     const keepSync = db.sync;
+    const photoData = data.photoData || {}; delete data.photoData;
+    Object.entries(photoData).forEach(([id, src]) => {
+      photoUrl[id] = src;
+      PDB.put({ id, data: src, synced: false }).catch(() => {});
+    });
     db = normalizeDb(data);
     // Всё из копии заново отправим в облако
     db.sync = { lastPush: 0, pull: keepSync.pull || {} };
@@ -951,10 +1028,22 @@ function readFiles(list) {
   return Promise.all([...(list || [])].map(file => file.text().then(text => ({ name: file.name.toLowerCase(), text }))));
 }
 
-function exportDb() {
+async function exportDb(withPhotos) {
+  let out = db, name = 'kassa-' + today() + '.json';
+  if (withPhotos) {
+    // Собираем фото: из телефона, а чего нет — из облака
+    const photoData = {}; let miss = 0, i = 0;
+    for (const p of db.photos) {
+      if (++i % 10 === 0) toast('Собираем фото: ' + i + ' из ' + db.photos.length);
+      const src = await loadPhoto(p.id).catch(() => null);
+      if (src) photoData[p.id] = src; else miss++;
+    }
+    out = Object.assign({}, db, { photoData });
+    name = 'kassa-foto-' + today() + '.json';
+    if (miss) toast('Не удалось получить фото: ' + miss + ' (нет интернета?)');
+  }
   db.lastBackup = Date.now(); save();
-  const name = 'kassa-' + today() + '.json';
-  const blob = new Blob([JSON.stringify(db)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
   const file = new File([blob], name, { type: 'application/json' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     navigator.share({ files: [file], title: name }).catch(() => {});
@@ -1036,6 +1125,7 @@ function importOld(files) {
 }
 
 /* ================= Старт ================= */
+purgeOld();
 render();
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
