@@ -1,0 +1,15 @@
+{
+  "name": "Касса — отчёты",
+  "short_name": "Отчёты",
+  "start_url": "./boss.html",
+  "scope": "./",
+  "id": "./boss.html",
+  "display": "standalone",
+  "background_color": "#f4f5f7",
+  "theme_color": "#1d4ed8",
+  "lang": "ru",
+  "icons": [
+    { "src": "icon-boss.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon-boss-180.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}

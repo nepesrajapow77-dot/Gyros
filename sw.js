@@ -1,6 +1,8 @@
-// Офлайн-кэш: сначала сеть, без сети — сохранённая копия
-const CACHE = 'kassa-v1';
-const FILES = ['./', './index.html', './manifest.webmanifest', './icon.svg'];
+// Офлайн-кэш: сначала сеть, без сети — сохранённая копия.
+// Кэшируем только файлы приложения и библиотеку Firebase, запросы к облаку не трогаем.
+const CACHE = 'kassa-v2';
+const FILES = ['./', './index.html', './boss.html', './app.css?v=2', './app.js?v=2', './sync.js?v=2', './firebase-config.js?v=2',
+  './manifest.webmanifest', './boss.webmanifest', './icon.svg', './icon-boss.svg', './icon-180.png', './icon-boss-180.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)));
@@ -14,10 +16,12 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET') return;
+  const url = new URL(e.request.url);
+  const ours = url.origin === location.origin || url.hostname === 'www.gstatic.com';
+  if (e.request.method !== 'GET' || !ours) return;
   e.respondWith(
     fetch(e.request)
-      .then(r => { const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return r; })
-      .catch(() => caches.match(e.request).then(r => r || caches.match('./index.html')))
+      .then(r => { if (r.ok) { const copy = r.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); } return r; })
+      .catch(() => caches.match(e.request).then(r => r || caches.match(url.pathname.endsWith('boss.html') ? './boss.html' : './index.html')))
   );
 });

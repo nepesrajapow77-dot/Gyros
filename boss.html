@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1d4ed8">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Отчёты">
+<link rel="manifest" href="boss.webmanifest">
+<link rel="icon" href="icon-boss.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-boss-180.png">
+<title>Касса — отчёты</title>
+<link rel="stylesheet" href="app.css?v=2">
+</head>
+<body>
+<header><div class="wrap" id="top"></div></header>
+<main class="wrap" id="main"></main>
+<nav><div class="wrap">
+  <button data-tab="day"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>День</button>
+  <button data-tab="cash"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg>Наличка</button>
+  <button data-tab="pay"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5M16 4.5a3.5 3.5 0 0 1 0 7M18.5 14.8c1.6.8 2.6 2.6 3 5.2"/></svg>Зарплата</button>
+  <button data-tab="more"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>Ещё</button>
+</div></nav>
+<div id="sheet"></div>
+<div id="toast"></div>
+<script>window.VIEWER = true;</script>
+<script src="firebase-config.js?v=2"></script>
+<script src="app.js?v=2"></script>
+<script type="module" src="sync.js?v=2"></script>
+</body>
+</html>
