@@ -460,7 +460,8 @@ function viewPay() {
       <div class="stat"><small>Всего к выдаче</small><b>${money(tS - tF - tA)}</b></div>
       <div class="stat"><small>Уже выдано</small><b>${money(tP)}</b></div>
       <div class="stat"><small>Выдано сотрудникам</small><b>${emps.filter(e => e.paid && e.paid[m]).length} из ${emps.length}</b></div>
-    </div></section>` +
+    </div>
+    <button class="wide" style="margin-top:10px" data-act="exportXlsx" data-month="${m}">📊 Скачать Excel за ${fmtMonth(m).toLowerCase()}</button></section>` +
     (cards || `<section class="card empty"><p>Нет сотрудников. Добавьте их во вкладке «Ещё».</p></section>`) + bossCard;
 }
 
@@ -481,6 +482,7 @@ function viewMore() {
     <p class="sub" style="margin:6px 0 10px">Режим просмотра: данные обновляются сами, когда бухгалтер их вносит.</p>
     <button class="wide" data-act="logout">Выйти</button>
   </section>
+  ${xlsCard()}
   <section class="card"><h2>Точки и сотрудники</h2>
     ${pts.map(p => `<div class="group">${esc(p.name)}</div>` + (pointEmps(p.id).map(e => `<div class="item"><span>${esc(e.name)}<span class="sub">${esc(e.position || '—')}</span></span><span class="num">${money(e.salary)}</span></div>`).join('') || '<p class="sub">Нет сотрудников</p>')).join('') || '<p class="sub">Пока нет точек</p>'}
   </section>`;
@@ -497,6 +499,7 @@ function viewMore() {
     ${pts.length ? '<button class="primary wide" style="margin-top:10px" data-act="addEmp">+ Добавить сотрудника</button>' : ''}
   </section>
 
+  ${xlsCard()}
   <section class="card"><h2>Резервная копия</h2>
     <p class="sub">${syncState.user ? 'Данные хранятся в облаке, но копия на всякий случай не помешает.' : 'Данные хранятся только на этом телефоне. Делайте копию раз в неделю и отправляйте её себе, например в Telegram или на Диск.'}</p>
     <p class="sub" style="margin:6px 0 10px">Последняя копия: <b>${lb}</b></p>
@@ -523,6 +526,12 @@ function viewMore() {
   </section>`;
 }
 
+function xlsCard() {
+  return `<section class="card"><h2>Выгрузка в Excel</h2>
+    <p class="sub" style="margin-bottom:10px">Файл за месяц: касса по точкам с итогами, питание, авансы, наличка, зарплата.</p>
+    <div class="quick" style="margin-top:0"><input type="month" id="xlsMonth" value="${ui.month}" aria-label="Месяц">
+    <button class="primary" style="flex:0 0 auto;font-size:16px;padding:0 16px" data-act="exportXlsx">Скачать</button></div></section>`;
+}
 // Корзина: всё удалённое за последние 30 дней
 function trashLabel(t) {
   const r = t.rec || {}, when = r.date ? ' · ' + fmtShort(r.date) : '';
@@ -867,6 +876,7 @@ const actions = {
     save(); render(); toast('Возвращено');
   },
   exportPhotos: () => exportDb(true),
+  exportXlsx: t => exportXlsx(t.dataset.month || ($('#xlsMonth') && $('#xlsMonth').value) || ui.month),
   paySheet: t => {
     const e = emp(t.dataset.id); if (!e) return;
     const m = ui.month, cur = e.paid && e.paid[m], inM = x => x.date.startsWith(m) && x.employeeId === e.id;
@@ -1043,8 +1053,12 @@ async function exportDb(withPhotos) {
     if (miss) toast('Не удалось получить фото: ' + miss + ' (нет интернета?)');
   }
   db.lastBackup = Date.now(); save();
-  const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
-  const file = new File([blob], name, { type: 'application/json' });
+  shareFile(new Blob([JSON.stringify(out)], { type: 'application/json' }), name);
+  render();
+}
+// Отдать файл: на телефоне — меню «Поделиться», иначе — скачать
+function shareFile(blob, name) {
+  const file = new File([blob], name, { type: blob.type });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     navigator.share({ files: [file], title: name }).catch(() => {});
   } else {
@@ -1053,7 +1067,146 @@ async function exportDb(withPhotos) {
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 3000);
   }
-  render();
+}
+
+/* ================= Excel (.xlsx без библиотек) ================= */
+const XL = (() => {
+  const enc = new TextEncoder();
+  const crcT = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  const crc32 = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = crcT[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+  // ZIP без сжатия
+  function zip(files) {
+    const parts = [], central = []; let off = 0;
+    files.forEach(f => {
+      const name = enc.encode(f.name), data = enc.encode(f.text), crc = crc32(data), sz = data.length;
+      const h = new DataView(new ArrayBuffer(30));
+      h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true);
+      h.setUint16(12, 0x21, true); h.setUint32(14, crc, true); h.setUint32(18, sz, true); h.setUint32(22, sz, true);
+      h.setUint16(26, name.length, true);
+      parts.push(new Uint8Array(h.buffer), name, data);
+      const c = new DataView(new ArrayBuffer(46));
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true);
+      c.setUint16(14, 0x21, true); c.setUint32(16, crc, true); c.setUint32(20, sz, true); c.setUint32(24, sz, true);
+      c.setUint16(28, name.length, true); c.setUint32(42, off, true);
+      central.push(new Uint8Array(c.buffer), name);
+      off += 30 + name.length + sz;
+    });
+    const cd = central.reduce((s, a) => s + a.length, 0), e = new DataView(new ArrayBuffer(22));
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
+    e.setUint32(12, cd, true); e.setUint32(16, off, true);
+    return new Blob([...parts, ...central, new Uint8Array(e.buffer)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+  const x = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+  const col = i => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+  const serial = s => { const [y, m, d] = s.split('-').map(Number); return (Date.UTC(y, m - 1, d) - Date.UTC(1899, 11, 30)) / 864e5; };
+  const NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
+  // Ячейка: число, строка или { d: 'YYYY-MM-DD' }. bold — номера жирных строк (0 = заголовок)
+  function sheet(sh) {
+    const rows = sh.rows.map((r, ri) => {
+      const b = ri === 0 || (sh.bold && sh.bold.has(ri));
+      return `<row r="${ri + 1}">` + r.map((v, ci) => {
+        if (v === null || v === undefined || v === '') return '';
+        const ref = col(ci) + (ri + 1);
+        if (typeof v === 'number') return `<c r="${ref}" s="${b ? 4 : 3}"><v>${Math.round(v * 100) / 100}</v></c>`;
+        if (v.d) return `<c r="${ref}" s="2"><v>${serial(v.d)}</v></c>`;
+        return `<c r="${ref}" t="inlineStr"${b ? ' s="1"' : ''}><is><t xml:space="preserve">${x(v)}</t></is></c>`;
+      }).join('') + '</row>';
+    }).join('');
+    const cols = '<cols>' + sh.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('') + '</cols>';
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet ${NS}><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>${cols}<sheetData>${rows}</sheetData></worksheet>`;
+  }
+  function book(sheets) {
+    const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const files = [
+      { name: '[Content_Types].xml', text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((s, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>` },
+      { name: '_rels/.rels', text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${R}/officeDocument" Target="xl/workbook.xml"/></Relationships>` },
+      { name: 'xl/workbook.xml', text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook ${NS} xmlns:r="${R}"><sheets>${sheets.map((s, i) => `<sheet name="${x(s.name.replace(/[\[\]:*?/\\]/g, ' ').slice(0, 31))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>` },
+      { name: 'xl/_rels/workbook.xml.rels', text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((s, i) => `<Relationship Id="rId${i + 1}" Type="${R}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="${R}/styles" Target="styles.xml"/></Relationships>` },
+      { name: 'xl/styles.xml', text: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet ${NS}><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="3" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="3" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/></cellXfs></styleSheet>` },
+      ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, text: sheet(s) })),
+    ];
+    return zip(files);
+  }
+  return { book };
+})();
+
+// Отчёт за месяц: касса, питание, авансы, наличка, зарплата
+function monthSheets(m) {
+  const inM = r => r.date && r.date.startsWith(m);
+  const byDP = (a, b) => a.date.localeCompare(b.date) || pointName(a.pointId).localeCompare(pointName(b.pointId), 'ru');
+  const D = s => ({ d: s });
+
+  // Касса
+  const fs = {}; db.food.filter(inM).forEach(f => { const k = f.date + '|' + f.pointId; fs[k] = (fs[k] || 0) + num(f.amount); });
+  const keys = new Set([...db.registers.filter(inM).map(r => r.date + '|' + r.pointId), ...Object.keys(fs)]);
+  const regRows = [...keys].map(k => { const [date, pointId] = k.split('|'); return { date, pointId, r: getReg(date, pointId) }; }).sort(byDP);
+  const kassa = { name: 'Касса', cols: [12, 20, 13, 11, 13, 13, 13], bold: new Set(),
+    rows: [['Дата', 'Точка', 'Счёт кассы', 'Чек', 'Касса − чек', 'Разделено', 'Не разделено']] };
+  const per = {};
+  regRows.forEach(({ date, pointId, r }) => {
+    const reg = num(r?.register), chk = num(r?.check), sp = fs[date + '|' + pointId] || 0;
+    kassa.rows.push([D(date), pointName(pointId), reg, chk, reg - chk, sp, chk - sp]);
+    const p = per[pointId] || (per[pointId] = [0, 0]); p[0] += reg; p[1] += chk;
+  });
+  kassa.rows.push([]);
+  Object.entries(per).sort((a, b) => pointName(a[0]).localeCompare(pointName(b[0]), 'ru')).forEach(([pid, [reg, chk]]) => {
+    kassa.bold.add(kassa.rows.length); kassa.rows.push(['Итого', pointName(pid), reg, chk, reg - chk]);
+  });
+  const tr = Object.values(per).reduce((s, p) => [s[0] + p[0], s[1] + p[1]], [0, 0]);
+  kassa.bold.add(kassa.rows.length); kassa.rows.push(['Итого', 'Все точки', tr[0], tr[1], tr[0] - tr[1]]);
+
+  // Питание и авансы
+  const list = (name, arr, who) => {
+    const sh = { name, cols: [12, 20, 24, 12], bold: new Set(), rows: [['Дата', 'Точка', who, 'Сумма']] };
+    arr.filter(inM).sort(byDP).forEach(r => sh.rows.push([D(r.date), pointName(r.pointId), empName(r.employeeId), num(r.amount)]));
+    sh.bold.add(sh.rows.length); sh.rows.push(['Итого', '', '', sum(arr.filter(inM), 'amount')]);
+    return sh;
+  };
+
+  // Наличка
+  const t = cashTimeline();
+  let bal = balanceAt(addDays(m + '-01', -1), t);
+  const cash = { name: 'Наличка', cols: [12, 13, 13, 13, 13, 13, 34, 14], bold: new Set(),
+    rows: [['Дата', 'Наличные', 'Добавлено', 'Расход', 'Аванс', 'Зарплата', 'Комментарий', 'Остаток']] };
+  cash.rows.push(['', '', '', '', '', '', 'Остаток на начало месяца', bal]);
+  const tot = [0, 0, 0, 0, 0];
+  t.dates.filter(d => d.startsWith(m)).forEach(d => {
+    const x = t.days[d];
+    x.entries.forEach(c => { bal += num(c.cash) + num(c.added) - num(c.expense); tot[0] += num(c.cash); tot[1] += num(c.added); tot[2] += num(c.expense);
+      cash.rows.push([D(d), num(c.cash) || '', num(c.added) || '', num(c.expense) || '', '', '', c.note || '', bal]); });
+    x.advs.forEach(a => { bal -= num(a.amount); tot[3] += num(a.amount);
+      cash.rows.push([D(d), '', '', '', num(a.amount), '', 'Аванс: ' + empName(a.employeeId) + ' (' + pointName(a.pointId) + ')', bal]); });
+    x.pays.forEach(p => { bal -= p.amount; tot[4] += p.amount;
+      cash.rows.push([D(d), '', '', '', '', p.amount, 'Зарплата: ' + p.e.name + ' за ' + fmtMonth(p.m).toLowerCase(), bal]); });
+  });
+  cash.bold.add(cash.rows.length); cash.rows.push(['Итого', ...tot, 'Остаток на конец месяца', bal]);
+
+  // Зарплата
+  const foodM = db.food.filter(inM), advM = db.advances.filter(inM);
+  const pay = { name: 'Зарплата', cols: [18, 20, 16, 11, 9, 12, 11, 11, 12, 12, 12], bold: new Set(),
+    rows: [['Точка', 'Сотрудник', 'Должность', 'Оклад', 'Дней', 'Начислено', 'Питание', 'Аванс', 'К выдаче', 'Выдано', 'Дата выдачи']] };
+  const pt = [0, 0, 0, 0, 0];
+  db.employees.filter(e => foodM.some(f => f.employeeId === e.id) || advM.some(a => a.employeeId === e.id) || (e.paid && e.paid[m]) || (!e.archived && workDays(e, m).days > 0))
+    .sort((a, b) => pointName(a.pointId).localeCompare(pointName(b.pointId), 'ru') || byName(a, b))
+    .forEach(e => {
+      const ac = accrued(e, m), s = Math.round(ac.amount), f = sum(foodM.filter(r => r.employeeId === e.id), 'amount'), a = sum(advM.filter(r => r.employeeId === e.id), 'amount');
+      const pd = e.paid && e.paid[m];
+      pt[0] += s; pt[1] += f; pt[2] += a; pt[3] += s - f - a; pt[4] += pd ? num(pd.amount) : 0;
+      pay.rows.push([pointName(e.pointId), e.name + (e.archived ? ' (уволен)' : ''), e.position || '', ac.full, ac.days + '/' + ac.dim, s, f, a, s - f - a, pd ? num(pd.amount) : '', pd ? D(pd.date) : '']);
+    });
+  pay.bold.add(pay.rows.length); pay.rows.push(['Итого', '', '', '', '', pt[0], pt[1], pt[2], pt[3], pt[4]]);
+  const boss = foodM.filter(f => f.employeeId === BOSS);
+  if (boss.length) {
+    pay.rows.push([]);
+    const bp = {}; boss.forEach(f => bp[f.pointId] = (bp[f.pointId] || 0) + num(f.amount));
+    Object.entries(bp).forEach(([p, v]) => pay.rows.push([pointName(p), BOSS_NAME, 'в зарплату не входит', '', '', '', v]));
+  }
+
+  return [kassa, list('Питание', db.food, 'Кто'), list('Авансы', db.advances, 'Сотрудник'), cash, pay];
+}
+function exportXlsx(m) {
+  try { shareFile(XL.book(monthSheets(m)), 'kassa-' + m + '.xlsx'); }
+  catch (e) { toast('Не удалось создать файл'); }
 }
 
 // Старый формат даты dd.MM.yy → yyyy-MM-dd
