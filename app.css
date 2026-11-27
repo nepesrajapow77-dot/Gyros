@@ -121,3 +121,5 @@ button:disabled{opacity:.6}
 #photoView .pv-wrap:has(img.zoom){display:block}
 #photoView .pv-bar{display:flex;gap:8px;align-items:center;padding:12px 16px calc(12px + env(safe-area-inset-bottom));background:#111}
 #photoView .pv-cap{flex:1;color:#ccc;font-size:14px}
+.linkcard{border-bottom:0;border-radius:14px;padding:14px;min-height:0}
+.dayhead.item{border-bottom:1px solid var(--line);padding:4px 2px 10px}

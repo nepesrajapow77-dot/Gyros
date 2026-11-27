@@ -203,16 +203,18 @@ function monthNav() {
     <div class="datebtn">${fmtMonth(ui.month)}</div>
     <button data-act="nextMonth" aria-label="Следующий месяц">›</button></div>`;
 }
+function dayNav() {
+  return `<div class="datenav"><button data-act="prevDay" aria-label="Предыдущий день">‹</button>
+    <label class="datebtn">${fmtDay(ui.date)}${ui.date === today() ? '<span class="today">· сегодня</span>' : ''}
+    <input type="date" value="${ui.date}" data-change="date" aria-label="Дата"></label>
+    <button data-act="nextDay" aria-label="Следующий день">›</button></div>`;
+}
 function topBar() {
   if (ui.tab === 'day') {
     if (!db.points.length) return '<h1>Касса кафе</h1>';
-    return pointSelect(ui.pointId, false, 'point') +
-      `<div class="datenav"><button data-act="prevDay" aria-label="Предыдущий день">‹</button>
-       <label class="datebtn">${fmtDay(ui.date)}${ui.date === today() ? '<span class="today">· сегодня</span>' : ''}
-       <input type="date" value="${ui.date}" data-change="date" aria-label="Дата"></label>
-       <button data-act="nextDay" aria-label="Следующий день">›</button></div>`;
+    return pointSelect(ui.pointId, false, 'point') + dayNav();
   }
-  if (ui.tab === 'cash') return '<h1>Общая наличка</h1>' + monthNav();
+  if (ui.tab === 'cash') return '<h1>Общая наличка</h1>' + dayNav();
   if (ui.tab === 'pay') return (db.points.length > 1 ? pointSelect(ui.payPoint, true, 'payPoint') : '<h1>Зарплата</h1>') + monthNav();
   return VIEWER ? '<h1>Ещё</h1>' : '<h1>Настройки</h1>';
 }
@@ -261,7 +263,6 @@ function viewDay() {
   const reg = getReg(d, pid);
   const foods = db.food.filter(f => f.date === d && f.pointId === pid);
   const advs = db.advances.filter(a => a.date === d && a.pointId === pid);
-  const cashs = db.cash.filter(c => c.date === d && c.pointId === pid);
   const dayPhotos = db.photos.filter(p => p.date === d && p.pointId === pid && !p.cashId);
   const people = peopleOpts(pid, false);
   const foodPeople = peopleOpts(pid, true);
@@ -299,9 +300,27 @@ function viewDay() {
     </form>` : noPeople}
   </section>
 
-  <section class="card"><h2>Наличка с точки</h2>
-    ${cashs.map(c => `<button class="item" data-act="editCash" data-id="${c.id}"><span>${esc(c.note || 'Запись')}</span><span class="num">${cashLine(c)}</span></button>` + photoGrid(cashPhotos(c.id))).join('')}
-    ${VIEWER ? (cashs.length ? '' : '<p class="sub">Записей нет</p>') : `<form data-form="cash" class="stack" style="margin-top:10px">
+  <button class="card item linkcard" data-act="tab" data-tab="cash">
+    <span>Общая наличка на конец дня<span class="sub">Ввод налички — во вкладке «Наличка»</span></span>
+    <span class="num">${money(balanceAt(d, t))} ›</span></button>
+
+  <section class="card"><h2>Фото за день <span class="badge">${dayPhotos.length}</span></h2>
+    ${dayPhotos.length ? photoGrid(dayPhotos) : `<p class="sub">${VIEWER ? 'Фото нет' : 'Чек-листы, накладные и всё, что нужно сохранить за этот день'}</p>`}
+    ${VIEWER ? '' : `<label class="filebtn photobtn" style="margin-top:8px">📷 Добавить фото
+      <input type="file" accept="image/*" multiple data-change="dayPhotos"></label>`}
+  </section>`;
+}
+
+/* ---------- Наличка ---------- */
+// Наличка общая на все точки: вводится один раз за день, без точки
+function viewCash() {
+  const t = cashTimeline(), d = ui.date, m = d.slice(0, 7), issues = checkIssues();
+  const dayCash = db.cash.filter(c => c.date === d);
+  const dayAdv = db.advances.filter(a => a.date === d);
+  const dayCard = `<section class="card"><h2>${d === today() ? 'Сегодня' : fmtDay(d)}</h2>
+    ${dayCash.map(c => `<button class="item" ${VIEWER ? '' : `data-act="editCash" data-id="${c.id}"`}><span>${esc(c.note || 'Запись')}</span><span class="num">${cashLine(c)}</span></button>` + photoGrid(cashPhotos(c.id))).join('')}
+    ${dayAdv.length ? `<div class="item"><span>Аванс<span class="sub">${dayAdv.map(a => esc(empName(a.employeeId))).join(', ')}</span></span><span class="num">− ${money(sum(dayAdv, 'amount'))}</span></div>` : ''}
+    ${VIEWER ? (dayCash.length || dayAdv.length ? '' : '<p class="sub">Записей нет</p>') : `<form data-form="cash" class="stack" style="margin-top:10px">
       <div class="grid3">
         <label class="fld"><span>Наличные</span><input name="cash" inputmode="decimal" placeholder="0" autocomplete="off"></label>
         <label class="fld"><span>Добавлено</span><input name="added" inputmode="decimal" placeholder="0" autocomplete="off"></label>
@@ -312,26 +331,18 @@ function viewDay() {
         <input type="file" accept="image/*" multiple data-change="cashFormPhotos"></label>
       <button class="primary">Добавить</button>
     </form>`}
-    <div class="total">Общая наличка на конец дня: <b>${money(balanceAt(d, t))}</b></div>
-  </section>
-
-  <section class="card"><h2>Фото за день <span class="badge">${dayPhotos.length}</span></h2>
-    ${dayPhotos.length ? photoGrid(dayPhotos) : `<p class="sub">${VIEWER ? 'Фото нет' : 'Чек-листы, накладные и всё, что нужно сохранить за этот день'}</p>`}
-    ${VIEWER ? '' : `<label class="filebtn photobtn" style="margin-top:8px">📷 Добавить фото
-      <input type="file" accept="image/*" multiple data-change="dayPhotos"></label>`}
+    <div class="big"><span class="muted">Остаток на конец дня</span><b class="${balanceAt(d, t) < 0 ? 'neg' : ''}">${money(balanceAt(d, t))}</b></div>
   </section>`;
+  return dayCard + cashMonth(t, m, issues);
 }
-
-/* ---------- Наличка ---------- */
-function viewCash() {
-  const t = cashTimeline(), m = ui.month, issues = checkIssues();
+function cashMonth(t, m, issues) {
   const before = balanceAt(addDays(m + '-01', -1), t);
   let inc = 0, exp = 0, adv = 0;
   t.dates.filter(d => d.startsWith(m)).forEach(d => { const x = t.days[d]; inc += x.cash + x.added; exp += x.expense; adv += x.advance; });
   const end = before + inc - exp - adv;
   const mdates = [...new Set([...t.dates, ...Object.keys(issues)])].filter(d => d.startsWith(m)).sort().reverse();
 
-  const summary = `<section class="card"><h2>Итог за месяц</h2>
+  const summary = `<section class="card"><h2>Итог за ${fmtMonth(m).toLowerCase()}</h2>
     <div class="stats">
       <div class="stat"><small>На начало</small><b>${money(before)}</b></div>
       <div class="stat"><small>Приход</small><b>${money(inc)}</b></div>
@@ -348,10 +359,10 @@ function viewCash() {
       ❗ ${esc(pointName(i.pointId))}: чек ${i.left > 0 ? 'не разделён на ' + money(i.left) : 'разделён больше на ' + money(-i.left)} — открыть</button>`).join('');
     if (!x) return `<section class="card"><div class="dayhead"><b>${fmtDay(d)}</b></div>${iss}</section>`;
     return `<section class="card">
-      <div class="dayhead"><b>${fmtDay(d)}</b><span class="muted">остаток <b class="num ${x.balance < 0 ? 'neg' : ''}" style="color:inherit">${money(x.balance)}</b></span></div>
-      ${x.entries.map(c => { const np = cashPhotos(c.id).length; return `<button class="item" data-act="${VIEWER ? 'goDay' : 'editCash'}" data-id="${c.id}" data-date="${c.date}" data-point="${c.pointId}">
-          <span>${esc(pointName(c.pointId))}${c.note || np ? `<span class="sub">${esc(c.note || '')}${np ? ' 📷' + np : ''}</span>` : ''}</span><span class="num">${cashLine(c)}</span></button>`; }).join('')}
-      ${x.advance ? `<button class="item" data-act="goDay" data-date="${d}" data-point="${x.advs[0].pointId}"><span>Аванс<span class="sub">${x.advs.map(a => esc(empName(a.employeeId))).join(', ')}</span></span><span class="num">− ${money(x.advance)}</span></button>` : ''}
+      <button class="item dayhead" data-act="setDate" data-date="${d}"><b>${fmtDay(d)}</b><span class="muted">остаток <b class="num ${x.balance < 0 ? 'neg' : ''}" style="color:inherit">${money(x.balance)}</b> ›</span></button>
+      ${x.entries.map(c => { const np = cashPhotos(c.id).length; return `<button class="item" data-act="setDate" data-date="${c.date}">
+          <span>${esc(c.note || 'Запись')}${np ? `<span class="sub">📷 ${np}</span>` : ''}</span><span class="num">${cashLine(c)}</span></button>`; }).join('')}
+      ${x.advance ? `<button class="item" data-act="setDate" data-date="${d}"><span>Аванс<span class="sub">${x.advs.map(a => esc(empName(a.employeeId))).join(', ')}</span></span><span class="num">− ${money(x.advance)}</span></button>` : ''}
       ${iss}</section>`;
   }).join('');
 }
@@ -580,7 +591,7 @@ function openPhoto(id) {
   const v = document.createElement('div');
   v.id = 'photoView';
   v.innerHTML = `<div class="pv-wrap"><img alt="Фото"></div>
-    <div class="pv-bar">${p ? `<span class="pv-cap">${esc(pointName(p.pointId))} · ${fmtShort(p.date)}</span>` : ''}
+    <div class="pv-bar">${p ? `<span class="pv-cap">${p.cashId ? 'Наличка' : esc(pointName(p.pointId))} · ${fmtShort(p.date)}</span>` : ''}
     ${VIEWER ? '' : `<button class="danger" data-act="delPhoto" data-id="${id}">Удалить</button>`}
     <button class="primary" data-act="closePhoto">Закрыть</button></div>`;
   document.body.appendChild(v);
@@ -716,19 +727,19 @@ const actions = {
         { name: 'added', label: 'Добавлено', type: 'number', value: c.added },
         { name: 'expense', label: 'Расход', type: 'number', value: c.expense },
         { name: 'note', label: 'Комментарий', value: c.note },
-        { name: 'pointId', label: 'Точка', type: 'select', options: sortedPoints().map(p => ({ v: p.id, t: p.name })), value: c.pointId },
         { name: 'date', label: 'Дата', type: 'date', value: c.date },
         { type: 'html', html: `<div class="fld"><span>Фото чека</span><div id="sheetPhotos">${photoGrid(cashPhotos(c.id)) || '<p class="sub">Нет фото</p>'}</div>
           <label class="filebtn photobtn">📷 Добавить фото<input type="file" accept="image/*" multiple data-change="cashPhotos" data-id="${c.id}"></label></div>` },
       ],
       onSave: v => {
-        Object.assign(c, { cash: num(v.cash), added: num(v.added), expense: num(v.expense), note: v.note, pointId: v.pointId, date: v.date || c.date }); stamp(c);
-        cashPhotos(c.id).forEach(p => { if (p.date !== c.date || p.pointId !== c.pointId) { p.date = c.date; p.pointId = c.pointId; stamp(p); } });
+        Object.assign(c, { cash: num(v.cash), added: num(v.added), expense: num(v.expense), note: v.note, date: v.date || c.date }); stamp(c);
+        cashPhotos(c.id).forEach(p => { if (p.date !== c.date) { p.date = c.date; stamp(p); } });
       },
       onDelete: () => { cashPhotos(c.id).forEach(removePhoto); removeRec('cash', c); },
     });
     hydratePhotos();
   },
+  setDate: t => { ui.date = t.dataset.date; render(); scrollTo(0, 0); },
   openPhoto: t => openPhoto(t.dataset.id),
   closePhoto: () => closePhoto(),
   delPhoto: t => {
@@ -805,7 +816,7 @@ const forms = {
     const v = k => num(f.elements[k].value);
     const files = pendingCashFiles; pendingCashFiles = [];
     if (!v('cash') && !v('added') && !v('expense') && !files.length) { toast('Введите хотя бы одну сумму'); return; }
-    const c = stamp({ id: uid(), date: ui.date, pointId: ui.pointId, cash: v('cash'), added: v('added'), expense: v('expense'), note: f.elements.note.value.trim() });
+    const c = stamp({ id: uid(), date: ui.date, pointId: '', cash: v('cash'), added: v('added'), expense: v('expense'), note: f.elements.note.value.trim() });
     db.cash.push(c);
     save(); render(); toast('Добавлено');
     if (files.length) addPhotos(files, { date: c.date, pointId: c.pointId, cashId: c.id });
