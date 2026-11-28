@@ -160,3 +160,5 @@ nav button{font-size:11px}
 .pdetail summary::-webkit-details-marker{display:none}
 .pdetail summary::before{content:'▸ '}
 .pdetail[open] summary::before{content:'▾ '}
+.steps{margin:6px 0 10px;padding-left:20px;font-size:14px;line-height:1.5}
+.btnlink{display:flex;align-items:center;justify-content:center;min-height:44px;border-radius:10px;background:var(--accent);color:var(--on-accent);font-weight:600;text-decoration:none}

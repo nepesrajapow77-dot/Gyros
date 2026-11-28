@@ -13,6 +13,9 @@ const ERRORS = {
   'auth/invalid-email': 'Неправильная почта',
   'auth/too-many-requests': 'Слишком много попыток. Подождите пару минут',
   'auth/network-request-failed': 'Нет интернета',
+  'auth/weak-password': 'Слишком простой пароль: нужно минимум 6 символов',
+  'auth/missing-email': 'Введите почту',
+  'auth/requires-recent-login': 'Выйдите и войдите заново, потом повторите',
   'permission-denied': App.VIEWER ? 'Нет доступа. Попросите бухгалтера добавить вашу почту' : 'Нет прав на запись в облако',
 };
 const msg = e => ERRORS[e && e.code] || (e && e.message) || 'Ошибка';
@@ -39,6 +42,7 @@ async function start() {
   const { initializeApp } = await import(SDK + 'firebase-app.js');
   const app = initializeApp(cfg);
   auth = A.getAuth(app);
+  auth.languageCode = 'ru'; // письма о сбросе пароля — на русском
   fs = F.getFirestore(app);
 
   A.onAuthStateChanged(auth, u => {
@@ -163,5 +167,27 @@ async function getPhoto(id) {
   return s.exists() ? s.data() : null;
 }
 
-window.Sync = { schedulePush, signIn, signOut, getPhoto };
+// Письмо со ссылкой для нового пароля (только в приложении бухгалтера)
+async function resetPassword(email) {
+  if (App.VIEWER) return { ok: false, error: 'Обратитесь к бухгалтеру' };
+  if (!auth) return { ok: false, error: 'Нет связи с облаком' };
+  try { await A.sendPasswordResetEmail(auth, email); return { ok: true }; }
+  catch (e) { return { ok: false, error: msg(e) }; }
+}
+// Смена пароля: сначала проверяем старый, потом ставим новый
+async function changePassword(oldPw, newPw) {
+  if (App.VIEWER) return { ok: false, error: 'Обратитесь к бухгалтеру' };
+  const u = auth && auth.currentUser;
+  if (!u) return { ok: false, error: 'Сначала войдите в облако' };
+  try {
+    await A.reauthenticateWithCredential(u, A.EmailAuthProvider.credential(u.email, oldPw));
+    await A.updatePassword(u, newPw);
+    return { ok: true };
+  } catch (e) {
+    const wrong = ['auth/invalid-credential', 'auth/wrong-password'].includes(e.code);
+    return { ok: false, error: wrong ? 'Старый пароль неверный' : msg(e) };
+  }
+}
+
+window.Sync = { schedulePush, signIn, signOut, getPhoto, resetPassword, changePassword };
 if (cfg) start();

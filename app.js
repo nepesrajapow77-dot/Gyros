@@ -227,6 +227,7 @@ function viewLogin() {
       <label class="fld"><span>Пароль</span><input name="password" type="password" autocomplete="current-password" required></label>
       <button class="primary">Войти</button>
       ${syncState.error ? `<p class="status bad">${esc(syncState.error)}</p>` : ''}
+      <p class="sub">Забыли пароль? Обратитесь к бухгалтеру — он задаст новый.</p>
     </form></section>`;
 }
 
@@ -1074,6 +1075,7 @@ function cloudCard() {
       <label class="fld"><span>Почта</span><input name="email" type="email" autocomplete="username" required></label>
       <label class="fld"><span>Пароль</span><input name="password" type="password" autocomplete="current-password" required></label>
       <button class="primary">Войти</button>
+      <button type="button" class="ghost" data-act="resetPw">Забыли пароль?</button>
       ${syncState.error ? `<p class="status bad">${esc(syncState.error)}</p>` : ''}
     </form></section>`;
   return `<section class="card"><h2>Облако <span class="badge ok">подключено</span></h2>
@@ -1081,7 +1083,24 @@ function cloudCard() {
     <p class="sub" style="margin:6px 0 10px">Все записи отправляются в облако сами. Без интернета — отправятся, когда связь появится.
     Ссылка для начальника: <b>${esc(location.href.replace(/[^/]*$/, ''))}boss.html</b></p>
     <div class="stack"><button data-act="shareBoss">Отправить ссылку начальнику</button>
-    <button class="ghost" data-act="logout">Выйти из облака</button></div></section>`;
+    <button data-act="changePw">Сменить мой пароль</button>
+    <button class="ghost" data-act="logout">Выйти из облака</button></div></section>
+  ${bossAccessCard()}`;
+}
+// Пароль начальника меняет только бухгалтер — в консоли Firebase
+const FB_USERS = 'https://console.firebase.google.com/project/gyros-c438c/authentication/users';
+function bossAccessCard() {
+  return `<details class="card"><summary><span><b>Доступ начальника</b><span class="sub">Сменить ему пароль или закрыть доступ</span></span></summary>
+    <p class="sub" style="margin:8px 0">Пароль начальника знаете и меняете только вы. Сам он сбросить или поменять пароль не может. Посмотреть старый пароль нельзя никому — можно только задать новый.</p>
+    <p><b>Задать новый пароль:</b></p>
+    <ol class="steps"><li>Откройте Firebase (кнопка ниже) на компьютере.</li>
+      <li>У почты начальника нажмите ⋮ → <b>Delete account</b>.</li>
+      <li>Нажмите <b>Add user</b>, введите ту же почту и новый пароль.</li>
+      <li>Скажите начальнику новый пароль. Все данные останутся — они не привязаны к паролю.</li></ol>
+    <p><b>Временно закрыть доступ:</b> ⋮ → <b>Disable account</b>. Вернуть — ⋮ → <b>Enable account</b>.</p>
+    <p class="sub" style="margin:6px 0 10px">В той же таблице в колонке <b>Signed In</b> видно, когда начальник последний раз входил.</p>
+    <a class="btnlink" href="${FB_USERS}" target="_blank" rel="noopener">Открыть пользователей в Firebase</a>
+  </details>`;
 }
 
 /* ================= Фото ================= */
@@ -1214,6 +1233,7 @@ function fieldHtml(f) {
   if (f.type === 'check') return `<label class="chk"><input type="checkbox" name="${f.name}"${f.value ? ' checked' : ''}><span>${esc(f.label)}</span></label>`;
   if (f.type === 'note') return `<p class="sub">${esc(f.label)}</p>`;
   if (f.type === 'html') return f.html;
+  if (f.type === 'password') return `<label class="fld">${lab}<input name="${f.name}" type="password" autocomplete="${f.auto || 'new-password'}"></label>`;
   const extra = f.type === 'number' ? ' inputmode="decimal" autocomplete="off"' : f.type === 'date' ? ' type="date"' : f.type === 'month' ? ' type="month"' : ' autocomplete="off"';
   return `<label class="fld">${lab}<input name="${f.name}"${extra} value="${esc(f.value ?? '')}" placeholder="${esc(f.placeholder || '')}"></label>`;
 }
@@ -1229,7 +1249,7 @@ function openSheet({ title, fields, onSave, onDelete, saveLabel, deleteConfirm }
   f.onsubmit = e => {
     e.preventDefault();
     const v = {};
-    fields.forEach(fd => { if (fd.name) { const i = f.elements[fd.name]; v[fd.name] = fd.type === 'check' ? i.checked : i.value.trim(); } });
+    fields.forEach(fd => { if (fd.name) { const i = f.elements[fd.name]; v[fd.name] = fd.type === 'check' ? i.checked : fd.type === 'password' ? i.value : i.value.trim(); } });
     if (onSave(v) === false) return;
     closeSheet(); save(); render();
   };
@@ -1369,6 +1389,32 @@ const actions = {
     hydratePhotos();
   },
   setDate: t => { ui.date = t.dataset.date; render(); scrollTo(0, 0); },
+  resetPw: t => {
+    const f = t.closest('form'), email = f && f.elements.email.value.trim();
+    if (!email) { toast('Введите почту, на неё придёт письмо'); f && f.elements.email.focus(); return; }
+    if (!window.Sync) { toast('Облако ещё загружается'); return; }
+    window.Sync.resetPassword(email).then(r => {
+      if (r.ok) alert('Письмо отправлено на ' + email + '.\n\nОткройте его и нажмите на ссылку, чтобы задать новый пароль. Если письма нет — проверьте папку «Спам».');
+      else toast(r.error);
+    });
+  },
+  changePw: () => openSheet({
+    title: 'Сменить мой пароль',
+    fields: [
+      { name: 'old', label: 'Старый пароль', type: 'password', auto: 'current-password' },
+      { name: 'new1', label: 'Новый пароль (минимум 6 символов)', type: 'password' },
+      { name: 'new2', label: 'Новый пароль ещё раз', type: 'password' },
+      { type: 'note', label: 'Не помните старый? Выйдите из облака и нажмите «Забыли пароль?» — придёт письмо.' },
+    ],
+    saveLabel: 'Сменить пароль',
+    onSave: v => {
+      if (!v.old || !v.new1) { toast('Заполните все поля'); return false; }
+      if (v.new1 !== v.new2) { toast('Новые пароли не совпадают'); return false; }
+      if (v.new1.length < 6) { toast('Нужно минимум 6 символов'); return false; }
+      if (!window.Sync) { toast('Облако ещё загружается'); return false; }
+      window.Sync.changePassword(v.old, v.new1).then(r => r.ok ? alert('Пароль изменён. Запомните его.') : toast(r.error));
+    },
+  }),
   markClosed: t => {
     const d = t.dataset.date, pid = t.dataset.point;
     let r = getReg(d, pid);
@@ -1442,7 +1488,7 @@ const actions = {
   },
 };
 // Действия, которые меняют данные — у начальника недоступны
-const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos', 'addProduct', 'editProduct', 'editStock', 'wcount', 'pcount', 'addCat', 'editCat', 'markClosed', 'editFine']);
+const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos', 'addProduct', 'editProduct', 'editStock', 'wcount', 'pcount', 'addCat', 'editCat', 'markClosed', 'editFine', 'resetPw', 'changePw']);
 
 const changes = {
   point: t => { ui.pointId = t.value; saveUi(); render(); },
