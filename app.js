@@ -390,7 +390,7 @@ function viewCash() {
     </form>`}
     <div class="big"><span class="muted">Остаток на конец дня</span><b class="${balanceAt(d, t) < 0 ? 'neg' : ''}">${money(balanceAt(d, t))}</b></div>
   </section>`;
-  return dayCard + cashMonth(t, m, issues);
+  return rentBanner() + dayCard + cashMonth(t, m, issues);
 }
 function cashMonth(t, m, issues) {
   const before = balanceAt(addDays(m + '-01', -1), t);
@@ -783,6 +783,37 @@ function productSheet(p) {
 }
 
 // Приход, оплаченный из налички, создаёт связанную запись расхода в «Наличке»
+/* ---------- Аренда точек ---------- */
+function catByName(name) {
+  let c = db.cats.find(x => x.name.trim().toLowerCase() === name.toLowerCase());
+  if (!c) { c = stamp({ id: uid(), name }); db.cats.push(c); }
+  return c.id;
+}
+// Оплачена ли аренда точки за месяц: запись от кнопки «Внести» или ручной расход «Аренда» с названием точки
+function rentPaid(p, m) {
+  const rc = db.cats.find(x => x.name.trim().toLowerCase() === 'аренда');
+  return db.cash.some(c => c.date.startsWith(m) && (c.rentFor === m && c.pointId === p.id ||
+    rc && c.catId === rc.id && num(c.expense) && (c.pointId === p.id || (c.note || '').toLowerCase().includes(p.name.toLowerCase()))));
+}
+function rentDue() {
+  const t = today(), cur = t.slice(0, 7), out = [];
+  sortedPoints().filter(p => num(p.rent)).forEach(p => {
+    for (let m = p.rentSince || cur; m <= cur; m = addMonths(m, 1)) {
+      if (m === cur && +t.slice(8) < (p.rentDay || 1)) continue;
+      if (!rentPaid(p, m)) out.push({ p, m });
+    }
+  });
+  return out;
+}
+function rentBanner() {
+  if (VIEWER) return '';
+  const due = rentDue();
+  if (!due.length) return '';
+  return `<section class="card status warn missing"><b>Аренда не внесена</b>
+    ${due.map(x => `<div class="mrow"><span>${esc(x.p.name)} · ${fmtMonth(x.m).toLowerCase()}<span class="sub">${money(x.p.rent)}</span></span>
+      <span><button data-act="payRent" data-point="${x.p.id}" data-month="${x.m}">Внести</button></span></div>`).join('')}</section>`;
+}
+
 function productsCat() {
   let c = db.cats.find(x => x.name.trim().toLowerCase() === 'продукты');
   if (!c) { c = stamp({ id: uid(), name: 'Продукты' }); db.cats.push(c); }
@@ -1341,11 +1372,19 @@ function pointSheet(p) {
     title: isNew ? 'Новая точка' : 'Точка',
     fields: [
       { name: 'name', label: 'Название или адрес', value: p.name, placeholder: 'Кафе на Ленина' },
+      { name: 'rent', label: 'Аренда в месяц (необязательно)', type: 'number', value: p.rent },
+      { name: 'rentDay', label: 'День оплаты аренды (1–28)', type: 'number', value: p.rentDay || 1 },
+      { type: 'note', label: 'Если указать аренду, во вкладке «Наличка» каждый месяц будет напоминание с кнопкой «Внести».' },
       ...(used ? [{ type: 'note', label: 'У точки есть сотрудники или записи, поэтому её нельзя удалить.' }] : []),
     ],
     onSave: v => {
       if (!v.name) { toast('Введите название'); return false; }
       p.name = v.name;
+      const rent = num(v.rent);
+      // Напоминаем с месяца, когда аренду указали впервые (не за прошлые месяцы)
+      if (rent && !num(p.rent)) p.rentSince = today().slice(0, 7);
+      p.rent = rent;
+      p.rentDay = Math.min(28, Math.max(1, Math.round(num(v.rentDay)) || 1));
       if (isNew) { p.id = uid(); db.points.push(p); if (!ui.pointId) ui.pointId = p.id; }
       stamp(p); toast('Сохранено');
     },
@@ -1415,6 +1454,15 @@ const actions = {
       window.Sync.changePassword(v.old, v.new1).then(r => r.ok ? alert('Пароль изменён. Запомните его.') : toast(r.error));
     },
   }),
+  payRent: t => {
+    const p = point(t.dataset.point), m = t.dataset.month; if (!p) return;
+    // Дата: выбранный день, если он в этом месяце; иначе сегодня или конец того месяца
+    const date = ui.date.startsWith(m) ? ui.date : today().startsWith(m) ? today() : monthEnd(m);
+    if (!confirm(`Внести аренду ${p.name} за ${fmtMonth(m).toLowerCase()}: ${money(p.rent)}?\nДата: ${fmtDay(date)}. Сумму потом можно исправить.`)) return;
+    db.cash.push(stamp({ id: uid(), date, pointId: p.id, cash: 0, added: 0, expense: num(p.rent), catId: catByName('Аренда'),
+      note: 'Аренда ' + p.name + ' за ' + fmtMonth(m).toLowerCase(), rentFor: m }));
+    save(); render(); toast('Аренда внесена');
+  },
   markClosed: t => {
     const d = t.dataset.date, pid = t.dataset.point;
     let r = getReg(d, pid);
@@ -1488,7 +1536,7 @@ const actions = {
   },
 };
 // Действия, которые меняют данные — у начальника недоступны
-const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos', 'addProduct', 'editProduct', 'editStock', 'wcount', 'pcount', 'addCat', 'editCat', 'markClosed', 'editFine', 'resetPw', 'changePw']);
+const EDIT_ACTS = new Set(['editFood', 'editAdv', 'editCash', 'addPoint', 'editPoint', 'addEmp', 'editEmp', 'wipe', 'export', 'delPhoto', 'paySheet', 'restore', 'exportPhotos', 'addProduct', 'editProduct', 'editStock', 'wcount', 'pcount', 'addCat', 'editCat', 'markClosed', 'editFine', 'resetPw', 'changePw', 'payRent']);
 
 const changes = {
   point: t => { ui.pointId = t.value; saveUi(); render(); },
